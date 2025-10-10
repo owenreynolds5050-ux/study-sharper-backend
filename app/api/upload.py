@@ -10,6 +10,7 @@ async def upload_file(
     file: UploadFile = File(...),
     title: str = Form(None),
     skip_ai: bool = Form(False),
+    skipAI: str = Form(None),
     folder_id: str = Form(None),
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
@@ -25,7 +26,9 @@ async def upload_file(
 
     # Extract text
     extracted_text = None
-    if not skip_ai:
+    # Accept both skip_ai (snake_case) and skipAI (camelCase from frontend)
+    should_skip_ai = skip_ai or (skipAI and skipAI.lower() == 'true')
+    if not should_skip_ai:
         if file.content_type == "application/pdf":
             extracted_text = extract_pdf_text(buffer)
         elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":

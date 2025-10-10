@@ -4,5 +4,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# IMPORTANT: Use SERVICE_ROLE_KEY for backend operations
+# This allows the backend to bypass RLS and perform admin operations
+# The anon key won't work because RLS blocks operations without user context
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# CORS configuration
+# In production, set ALLOWED_ORIGINS to your Vercel domain(s)
+# Example: "https://your-app.vercel.app,https://your-app-production.vercel.app"
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+ALLOWED_ORIGINS_LIST = [origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()]

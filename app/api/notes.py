@@ -3,6 +3,11 @@ from pydantic import BaseModel
 from typing import List, Optional
 from app.core.auth import get_current_user, get_supabase_client
 
+# Security model:
+# - get_current_user() validates the JWT token and extracts user_id
+# - get_supabase_client() uses service role key for database operations
+# - All queries are filtered by user_id to ensure data isolation
+
 router = APIRouter()
 
 class NoteFolder(BaseModel):
@@ -78,6 +83,9 @@ class CreateNote(BaseModel):
     tags: Optional[List[str]] = None
     folder_id: Optional[str] = None
 
+class UpdateNote(BaseModel):
+    folder_id: Optional[str] = None
+
 @router.get("/notes", response_model=List[Note])
 def get_notes(
     user_id: str = Depends(get_current_user),
@@ -110,12 +118,12 @@ async def create_note(
 @router.put("/notes/{note_id}", response_model=Note)
 async def update_note(
     note_id: str,
-    folder_id: str,
+    update: UpdateNote,
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
     try:
-        response = supabase.table("notes").update({"folder_id": folder_id}).eq("id", note_id).eq("user_id", user_id).execute()
+        response = supabase.table("notes").update({"folder_id": update.folder_id}).eq("id", note_id).eq("user_id", user_id).execute()
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
