@@ -1,10 +1,10 @@
-import PyPDF2
+from pypdf import PdfReader
 import docx
 import io
 
 def extract_pdf_text(buffer: bytes) -> str:
     try:
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(buffer))
+        pdf_reader = PdfReader(io.BytesIO(buffer))
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text()
