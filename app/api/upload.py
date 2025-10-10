@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
 from supabase import create_client, Client
 from app.core.config import SUPABASE_URL, SUPABASE_KEY
+from app.services.text_extraction import extract_pdf_text, extract_docx_text
 import uuid
 
 router = APIRouter()
@@ -9,14 +10,14 @@ def get_supabase_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @router.post("/upload")
-asnyc def upload_file(
+async def upload_file(
     file: UploadFile = File(...),
     title: str = Form(None),
     skip_ai: bool = Form(False),
     folder_id: str = Form(None),
     supabase: Client = Depends(get_supabase_client)
 ):
-        user_id = "..." # Replace with actual user ID from auth
+    user_id = "..."  # Replace with actual user ID from auth
 
     # Generate unique ID
     note_id = str(uuid.uuid4())
@@ -55,10 +56,10 @@ asnyc def upload_file(
     }
 
     try:
-        data, count = supabase.table("notes").insert(new_note).execute()
+        response = supabase.table("notes").insert(new_note).execute()
     except Exception as e:
         # Clean up storage if db insert fails
         supabase.storage.from_("notes-pdfs").remove([file_path])
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {"success": True, "note": data[1][0]}
+    return {"success": True, "note": response.data[0]}

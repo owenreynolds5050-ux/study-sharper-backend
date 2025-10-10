@@ -24,15 +24,15 @@ async def chat(
     body: ChatRequestBody,
     supabase: Client = Depends(get_supabase_client)
 ):
-        user_id = "..."  # Replace with actual user ID from auth
+    user_id = "..."  # Replace with actual user ID from auth
 
     context = ""
     sources = []
 
     if body.note_ids:
         try:
-            data, count = supabase.table("notes").select("id,title,summary,content,extracted_text").in_("id", body.note_ids).eq("user_id", user_id).execute()
-            notes = data[1]
+            response = supabase.table("notes").select("id,title,summary,content,extracted_text").in_("id", body.note_ids).eq("user_id", user_id).execute()
+            notes = response.data
 
             if notes:
                 note_snippets = []

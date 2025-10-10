@@ -23,8 +23,8 @@ class CreateNoteFolder(BaseModel):
 def get_folders(supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("note_folders").select("*").eq("user_id", user_id).order("created_at").execute()
-        return data[1]
+        response = supabase.table("note_folders").select("*").eq("user_id", user_id).order("created_at").execute()
+        return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -32,8 +32,8 @@ def get_folders(supabase: Client = Depends(get_supabase_client)):
 async def create_folder(folder: CreateNoteFolder, supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("note_folders").insert({"user_id": user_id, "name": folder.name, "color": folder.color}).execute()
-        return data[1][0]
+        response = supabase.table("note_folders").insert({"user_id": user_id, "name": folder.name, "color": folder.color}).execute()
+        return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -41,12 +41,19 @@ async def create_folder(folder: CreateNoteFolder, supabase: Client = Depends(get
 async def update_folder(folder_id: str, folder: CreateNoteFolder, supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("note_folders").update({"name": folder.name, "color": folder.color}).eq("id", folder_id).eq("user_id", user_id).execute()
-        return data[1][0]
+        response = supabase.table("note_folders").update({"name": folder.name, "color": folder.color}).eq("id", folder_id).eq("user_id", user_id).execute()
+        return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: str, supabase: Client = Depends(get_supabase_client)):
+    user_id = "..."  # Replace with actual user ID from auth
+    try:
+        response = supabase.table("note_folders").delete().eq("id", folder_id).eq("user_id", user_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class Note(BaseModel):
     id: str
@@ -67,8 +74,8 @@ class CreateNote(BaseModel):
 def get_notes(supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("notes").select("*").eq("user_id", user_id).order("updated_at").execute()
-        return data[1]
+        response = supabase.table("notes").select("*").eq("user_id", user_id).order("updated_at").execute()
+        return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -76,14 +83,14 @@ def get_notes(supabase: Client = Depends(get_supabase_client)):
 async def create_note(note: CreateNote, supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("notes").insert({
+        response = supabase.table("notes").insert({
             "user_id": user_id,
             "title": note.title,
             "content": note.content,
             "tags": note.tags,
             "folder_id": note.folder_id
         }).execute()
-        return data[1][0]
+        return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -91,8 +98,8 @@ async def create_note(note: CreateNote, supabase: Client = Depends(get_supabase_
 async def update_note(note_id: str, folder_id: str, supabase: Client = Depends(get_supabase_client)):
     user_id = "..."  # Replace with actual user ID from auth
     try:
-        data, count = supabase.table("notes").update({"folder_id": folder_id}).eq("id", note_id).eq("user_id", user_id).execute()
-        return data[1][0]
+        response = supabase.table("notes").update({"folder_id": folder_id}).eq("id", note_id).eq("user_id", user_id).execute()
+        return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -101,15 +108,15 @@ async def delete_note(note_id: str, supabase: Client = Depends(get_supabase_clie
     user_id = "..."  # Replace with actual user ID from auth
     try:
         # First, get the note to find the file path
-        data, count = supabase.table("notes").select("file_path").eq("id", note_id).eq("user_id", user_id).execute()
-        note = data[1][0]
+        response = supabase.table("notes").select("file_path").eq("id", note_id).eq("user_id", user_id).execute()
+        note = response.data[0]
 
         # If there's a file, delete it from storage
         if note and note.get("file_path"):
             supabase.storage.from_("notes-pdfs").remove([note["file_path"]])
 
         # Then, delete the note from the database
-        data, count = supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
+        response = supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
