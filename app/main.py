@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import notes, chat, upload
+from app.api import notes, chat, upload, embeddings
 from app.core.config import ALLOWED_ORIGINS_LIST
 
 app = FastAPI()
@@ -17,6 +17,7 @@ app.add_middleware(
 app.include_router(notes.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
+app.include_router(embeddings.router, prefix="/api")
 
 @app.get("/")
 def read_root():
