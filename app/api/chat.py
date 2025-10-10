@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-from supabase import create_client, Client
-from app.core.config import SUPABASE_URL, SUPABASE_KEY
+from app.core.auth import get_current_user, get_supabase_client
 from app.services.open_router import get_chat_completion
 
 router = APIRouter()
@@ -16,15 +15,12 @@ class ChatRequestBody(BaseModel):
     note_ids: Optional[List[str]] = None
     model: Optional[str] = None
 
-def get_supabase_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
 @router.post("/chat")
 async def chat(
     body: ChatRequestBody,
-    supabase: Client = Depends(get_supabase_client)
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
 ):
-    user_id = "..."  # Replace with actual user ID from auth
 
     context = ""
     sources = []

@@ -1,13 +1,9 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
-from supabase import create_client, Client
-from app.core.config import SUPABASE_URL, SUPABASE_KEY
+from app.core.auth import get_current_user, get_supabase_client
 from app.services.text_extraction import extract_pdf_text, extract_docx_text
 import uuid
 
 router = APIRouter()
-
-def get_supabase_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @router.post("/upload")
 async def upload_file(
@@ -15,9 +11,9 @@ async def upload_file(
     title: str = Form(None),
     skip_ai: bool = Form(False),
     folder_id: str = Form(None),
-    supabase: Client = Depends(get_supabase_client)
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
 ):
-    user_id = "..."  # Replace with actual user ID from auth
 
     # Generate unique ID
     note_id = str(uuid.uuid4())
