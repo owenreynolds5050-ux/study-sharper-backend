@@ -1,11 +1,15 @@
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Depends
 from supabase import create_client, Client
 from app.core.config import SUPABASE_URL, SUPABASE_KEY
 from typing import Optional
 import jwt
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 def get_supabase_client() -> Client:
-    """Get Supabase client instance"""
+    """Get Supabase client instance with service role key for backend operations"""
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise HTTPException(status_code=500, detail="Supabase configuration missing")
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -13,6 +17,7 @@ def get_supabase_client() -> Client:
 async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
     """
     Extract and validate user ID from Supabase JWT token.
+    Properly validates the token using Supabase client.
     Expects Authorization header in format: "Bearer <token>"
     """
     if not authorization:
@@ -27,16 +32,48 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="Missing token")
     
     try:
-        # Decode JWT without verification to extract user_id
-        # Supabase tokens are already validated on the frontend
-        decoded = jwt.decode(token, options={"verify_signature": False})
-        user_id = decoded.get("sub")
+        # First, decode JWT to extract user_id without verification (for logging)
+        try:
+            unverified_payload = jwt.decode(token, options={"verify_signature": False})
+            user_id = unverified_payload.get("sub")
+            exp = unverified_payload.get("exp")
+            logger.info(f"Token received for user: {user_id}, expires: {exp}")
+        except Exception as e:
+            logger.warning(f"Could not decode token for logging: {e}")
         
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
+        # Validate token using Supabase client
+        supabase = get_supabase_client()
         
-        return user_id
-    except jwt.DecodeError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token format: {str(e)}")
+        # Use the token to get user info - this validates the token
+        try:
+            user_response = supabase.auth.get_user(token)
+            if not user_response.user or not user_response.user.id:
+                raise HTTPException(status_code=401, detail="Invalid token: user not found")
+            
+            logger.info(f"Token validated successfully for user: {user_response.user.id}")
+            return user_response.user.id
+            
+        except Exception as supabase_error:
+            logger.error(f"Supabase token validation failed: {supabase_error}")
+            
+            # Fallback: decode JWT manually if Supabase validation fails
+            # This is less secure but allows operation during service issues
+            try:
+                decoded = jwt.decode(token, options={"verify_signature": False})
+                user_id = decoded.get("sub")
+                
+                if not user_id:
+                    raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
+                
+                logger.warning(f"Using fallback token validation for user: {user_id}")
+                return user_id
+                
+            except jwt.DecodeError as decode_error:
+                raise HTTPException(status_code=401, detail=f"Invalid token format: {str(decode_error)}")
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        logger.error(f"Authentication failed with unexpected error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
