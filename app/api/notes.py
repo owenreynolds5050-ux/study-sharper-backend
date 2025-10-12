@@ -15,6 +15,8 @@ class NoteFolder(BaseModel):
     user_id: str
     name: str
     color: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 class CreateNoteFolder(BaseModel):
     name: str
@@ -76,6 +78,8 @@ class Note(BaseModel):
     tags: Optional[List[str]] = None
     folder_id: Optional[str] = None
     file_path: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 class CreateNote(BaseModel):
     title: str
