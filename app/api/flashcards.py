@@ -1,0 +1,460 @@
+"""
+Flashcard API Endpoints
+Handles flashcard generation, CRUD operations, and spaced repetition reviews
+"""
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime, timedelta
+from app.core.auth import get_current_user, get_supabase_client
+from app.services.flashcards import (
+    generate_flashcards_from_text,
+    calculate_next_review_interval,
+    update_mastery_level
+)
+
+router = APIRouter()
+
+
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
+class GenerateFlashcardsRequest(BaseModel):
+    note_ids: List[str]
+    num_cards: int = 10
+    difficulty: str = "medium"  # easy, medium, hard
+    set_title: Optional[str] = None
+    set_description: Optional[str] = None
+
+
+class FlashcardResponse(BaseModel):
+    id: str
+    set_id: str
+    front: str
+    back: str
+    explanation: Optional[str] = None
+    position: int
+    mastery_level: int
+    times_reviewed: int
+    times_correct: int
+    times_incorrect: int
+    last_reviewed_at: Optional[str] = None
+    next_review_at: Optional[str] = None
+    source_note_id: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class FlashcardSetResponse(BaseModel):
+    id: str
+    title: str
+    description: Optional[str] = None
+    source_note_ids: List[str]
+    total_cards: int
+    mastered_cards: int
+    created_at: str
+    updated_at: str
+
+
+class ReviewFlashcardRequest(BaseModel):
+    was_correct: bool
+    confidence_rating: Optional[int] = None  # 1-5
+    time_spent_seconds: Optional[int] = None
+
+
+class CreateFlashcardRequest(BaseModel):
+    set_id: str
+    front: str
+    back: str
+    explanation: Optional[str] = None
+
+
+class UpdateFlashcardRequest(BaseModel):
+    front: Optional[str] = None
+    back: Optional[str] = None
+    explanation: Optional[str] = None
+
+
+# ============================================================================
+# FLASHCARD GENERATION
+# ============================================================================
+
+@router.post("/flashcards/generate")
+async def generate_flashcards(
+    request: GenerateFlashcardsRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Generate AI-powered flashcards from one or more notes.
+    """
+    try:
+        # Validate difficulty
+        if request.difficulty not in ["easy", "medium", "hard"]:
+            raise HTTPException(status_code=400, detail="Invalid difficulty level")
+        
+        # Fetch notes content
+        notes_response = supabase.table("notes").select(
+            "id, title, content, extracted_text"
+        ).in_("id", request.note_ids).eq("user_id", user_id).execute()
+        
+        if not notes_response.data:
+            raise HTTPException(status_code=404, detail="No notes found")
+        
+        # Combine note content
+        combined_text = []
+        note_titles = []
+        
+        for note in notes_response.data:
+            note_titles.append(note.get("title", "Untitled"))
+            content = note.get("content") or note.get("extracted_text") or ""
+            if content:
+                combined_text.append(f"## {note['title']}\n\n{content}")
+        
+        full_text = "\n\n".join(combined_text)
+        
+        if not full_text.strip():
+            raise HTTPException(status_code=400, detail="Notes have no content")
+        
+        # Truncate if too long (max 8000 chars for AI processing)
+        if len(full_text) > 8000:
+            full_text = full_text[:8000] + "\n\n[Content truncated...]"
+        
+        # Generate flashcards using AI
+        flashcards = generate_flashcards_from_text(
+            text=full_text,
+            note_title=" & ".join(note_titles[:3]),  # First 3 titles
+            num_cards=request.num_cards,
+            difficulty=request.difficulty
+        )
+        
+        # Create flashcard set
+        set_title = request.set_title or f"Flashcards: {' & '.join(note_titles[:2])}"
+        if len(note_titles) > 2:
+            set_title += f" (+{len(note_titles) - 2} more)"
+        
+        set_data = {
+            "user_id": user_id,
+            "title": set_title[:200],  # Limit length
+            "description": request.set_description,
+            "source_note_ids": request.note_ids
+        }
+        
+        set_response = supabase.table("flashcard_sets").insert(set_data).execute()
+        
+        if not set_response.data:
+            raise HTTPException(status_code=500, detail="Failed to create flashcard set")
+        
+        flashcard_set = set_response.data[0]
+        set_id = flashcard_set["id"]
+        
+        # Insert flashcards
+        flashcard_records = []
+        for i, card in enumerate(flashcards):
+            flashcard_records.append({
+                "user_id": user_id,
+                "set_id": set_id,
+                "front": card["front"],
+                "back": card["back"],
+                "explanation": card.get("explanation", ""),
+                "position": i,
+                "source_note_id": request.note_ids[0] if len(request.note_ids) == 1 else None
+            })
+        
+        cards_response = supabase.table("flashcards").insert(flashcard_records).execute()
+        
+        if not cards_response.data:
+            raise HTTPException(status_code=500, detail="Failed to create flashcards")
+        
+        return {
+            "success": True,
+            "set": flashcard_set,
+            "flashcards": cards_response.data,
+            "count": len(cards_response.data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate flashcards: {str(e)}")
+
+
+# ============================================================================
+# FLASHCARD SETS - CRUD
+# ============================================================================
+
+@router.get("/flashcards/sets", response_model=List[FlashcardSetResponse])
+async def get_flashcard_sets(
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Get all flashcard sets for the current user."""
+    try:
+        response = supabase.table("flashcard_sets").select("*").eq(
+            "user_id", user_id
+        ).order("created_at", desc=True).execute()
+        
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/flashcards/sets/{set_id}")
+async def get_flashcard_set(
+    set_id: str,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Get a specific flashcard set with its cards."""
+    try:
+        # Get set
+        set_response = supabase.table("flashcard_sets").select("*").eq(
+            "id", set_id
+        ).eq("user_id", user_id).single().execute()
+        
+        if not set_response.data:
+            raise HTTPException(status_code=404, detail="Flashcard set not found")
+        
+        # Get cards in the set
+        cards_response = supabase.table("flashcards").select("*").eq(
+            "set_id", set_id
+        ).eq("user_id", user_id).order("position").execute()
+        
+        return {
+            "set": set_response.data,
+            "flashcards": cards_response.data or []
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/flashcards/sets/{set_id}")
+async def delete_flashcard_set(
+    set_id: str,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Delete a flashcard set and all its cards."""
+    try:
+        response = supabase.table("flashcard_sets").delete().eq(
+            "id", set_id
+        ).eq("user_id", user_id).execute()
+        
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# FLASHCARDS - CRUD
+# ============================================================================
+
+@router.get("/flashcards/{set_id}/cards", response_model=List[FlashcardResponse])
+async def get_flashcards(
+    set_id: str,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Get all flashcards in a set."""
+    try:
+        response = supabase.table("flashcards").select("*").eq(
+            "set_id", set_id
+        ).eq("user_id", user_id).order("position").execute()
+        
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/flashcards")
+async def create_flashcard(
+    request: CreateFlashcardRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Create a new flashcard manually."""
+    try:
+        # Verify set exists and belongs to user
+        set_response = supabase.table("flashcard_sets").select("id").eq(
+            "id", request.set_id
+        ).eq("user_id", user_id).execute()
+        
+        if not set_response.data:
+            raise HTTPException(status_code=404, detail="Flashcard set not found")
+        
+        # Get max position
+        max_pos_response = supabase.table("flashcards").select("position").eq(
+            "set_id", request.set_id
+        ).order("position", desc=True).limit(1).execute()
+        
+        next_position = 0
+        if max_pos_response.data:
+            next_position = max_pos_response.data[0]["position"] + 1
+        
+        # Create flashcard
+        flashcard_data = {
+            "user_id": user_id,
+            "set_id": request.set_id,
+            "front": request.front,
+            "back": request.back,
+            "explanation": request.explanation,
+            "position": next_position,
+            "ai_generated": False
+        }
+        
+        response = supabase.table("flashcards").insert(flashcard_data).execute()
+        
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/flashcards/{flashcard_id}")
+async def update_flashcard(
+    flashcard_id: str,
+    request: UpdateFlashcardRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Update a flashcard."""
+    try:
+        update_data = {}
+        if request.front is not None:
+            update_data["front"] = request.front
+        if request.back is not None:
+            update_data["back"] = request.back
+        if request.explanation is not None:
+            update_data["explanation"] = request.explanation
+        
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        response = supabase.table("flashcards").update(update_data).eq(
+            "id", flashcard_id
+        ).eq("user_id", user_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Flashcard not found")
+        
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/flashcards/{flashcard_id}")
+async def delete_flashcard(
+    flashcard_id: str,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Delete a flashcard."""
+    try:
+        response = supabase.table("flashcards").delete().eq(
+            "id", flashcard_id
+        ).eq("user_id", user_id).execute()
+        
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SPACED REPETITION - REVIEW
+# ============================================================================
+
+@router.post("/flashcards/{flashcard_id}/review")
+async def review_flashcard(
+    flashcard_id: str,
+    request: ReviewFlashcardRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Record a flashcard review and update spaced repetition data."""
+    try:
+        # Get current flashcard
+        card_response = supabase.table("flashcards").select("*").eq(
+            "id", flashcard_id
+        ).eq("user_id", user_id).single().execute()
+        
+        if not card_response.data:
+            raise HTTPException(status_code=404, detail="Flashcard not found")
+        
+        card = card_response.data
+        
+        # Update mastery level and calculate next review
+        current_level = card.get("mastery_level", 0)
+        new_level = update_mastery_level(current_level, request.was_correct)
+        interval_days = calculate_next_review_interval(new_level, request.was_correct)
+        next_review = datetime.now() + timedelta(days=interval_days)
+        
+        # Update flashcard statistics
+        update_data = {
+            "mastery_level": new_level,
+            "times_reviewed": card.get("times_reviewed", 0) + 1,
+            "times_correct": card.get("times_correct", 0) + (1 if request.was_correct else 0),
+            "times_incorrect": card.get("times_incorrect", 0) + (0 if request.was_correct else 1),
+            "last_reviewed_at": datetime.now().isoformat(),
+            "next_review_at": next_review.isoformat()
+        }
+        
+        supabase.table("flashcards").update(update_data).eq("id", flashcard_id).execute()
+        
+        # Record review in history
+        review_data = {
+            "user_id": user_id,
+            "flashcard_id": flashcard_id,
+            "set_id": card["set_id"],
+            "was_correct": request.was_correct,
+            "confidence_rating": request.confidence_rating,
+            "time_spent_seconds": request.time_spent_seconds
+        }
+        
+        supabase.table("flashcard_reviews").insert(review_data).execute()
+        
+        return {
+            "success": True,
+            "mastery_level": new_level,
+            "next_review_at": next_review.isoformat(),
+            "interval_days": interval_days
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/flashcards/due")
+async def get_due_flashcards(
+    set_id: Optional[str] = None,
+    limit: int = 20,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Get flashcards that are due for review."""
+    try:
+        params = {
+            "p_user_id": user_id,
+            "p_limit": limit
+        }
+        
+        if set_id:
+            params["p_set_id"] = set_id
+        
+        response = supabase.rpc("get_flashcards_due_for_review", params).execute()
+        
+        return {
+            "success": True,
+            "flashcards": response.data or [],
+            "count": len(response.data) if response.data else 0
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -214,7 +214,7 @@ async def search_notes(
         response = supabase.rpc(
             "search_similar_notes",
             {
-                "query_embedding": json.dumps(query_embedding),
+                "query_embedding": query_embedding,  # Pass as list, Supabase client handles JSON conversion
                 "user_id_param": user_id,
                 "match_threshold": request.threshold,
                 "match_count": request.limit
