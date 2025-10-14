@@ -2,8 +2,11 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
 from app.core.auth import get_current_user, get_supabase_client
 from app.services.text_extraction import extract_pdf_text, extract_docx_text
 import uuid
+import logging
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 @router.post("/upload")
 async def upload_file(
@@ -35,6 +38,24 @@ async def upload_file(
             extracted_text = extract_docx_text(buffer)
 
     note_content = extracted_text if extracted_text else "File uploaded successfully."
+
+    # Ensure profile exists for this user (needed due to foreign key constraint)
+    try:
+        profile_response = supabase.table("profiles").select("id").eq("id", user_id).execute()
+        if not profile_response.data:
+            try:
+                user_response = supabase.auth.admin.get_user_by_id(user_id)
+                email = getattr(getattr(user_response, "user", None), "email", "") or ""
+            except Exception as admin_error:
+                logger.warning("Failed to fetch user info for %s: %s", user_id, admin_error)
+                email = ""
+
+            supabase.table("profiles").upsert({
+                "id": user_id,
+                "email": email,
+            }).execute()
+    except Exception as profile_error:
+        logger.warning("Could not ensure profile exists for %s: %s", user_id, profile_error)
 
     # Upload file to storage
     try:
