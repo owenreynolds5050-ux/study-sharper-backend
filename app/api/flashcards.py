@@ -77,6 +77,21 @@ class UpdateFlashcardRequest(BaseModel):
     explanation: Optional[str] = None
 
 
+class CreateFlashcardSetRequest(BaseModel):
+    title: str
+    description: Optional[str] = None
+
+
+class AIChatRequest(BaseModel):
+    message: str
+    context: Optional[dict] = None
+
+
+class AcceptSuggestionRequest(BaseModel):
+    set_id: str
+    accept: bool
+
+
 # ============================================================================
 # FLASHCARD GENERATION
 # ============================================================================
@@ -181,9 +196,127 @@ async def generate_flashcards(
         raise HTTPException(status_code=500, detail=f"Failed to generate flashcards: {str(e)}")
 
 
+@router.post("/flashcards/suggest")
+async def generate_suggested_flashcards(
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Auto-generate suggested flashcard sets from recent notes.
+    Called after note upload or on daily refresh.
+    """
+    try:
+        from app.services.flashcards import generate_suggested_flashcards_for_user
+        
+        suggestions = await generate_suggested_flashcards_for_user(user_id, supabase)
+        
+        return {
+            "success": True,
+            "suggestions": suggestions,
+            "count": len(suggestions)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate suggestions: {str(e)}")
+
+
+@router.post("/flashcards/chat")
+async def flashcard_ai_chat(
+    request: AIChatRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    AI chatbot for flashcard generation with natural language prompts.
+    Uses RAG to find relevant notes and generate flashcards.
+    """
+    try:
+        from app.services.flashcards import process_flashcard_chat_request
+        
+        response = await process_flashcard_chat_request(
+            user_id=user_id,
+            message=request.message,
+            context=request.context,
+            supabase=supabase
+        )
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat request failed: {str(e)}")
+
+
 # ============================================================================
 # FLASHCARD SETS - CRUD
 # ============================================================================
+
+@router.post("/flashcards/sets/create")
+async def create_blank_flashcard_set(
+    request: CreateFlashcardSetRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Create a blank flashcard set for manual card creation."""
+    try:
+        set_data = {
+            "user_id": user_id,
+            "title": request.title,
+            "description": request.description,
+            "source_note_ids": [],
+            "ai_generated": False,
+            "is_suggested": False
+        }
+        
+        response = supabase.table("flashcard_sets").insert(set_data).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to create flashcard set")
+        
+        return {
+            "success": True,
+            "set": response.data[0]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create set: {str(e)}")
+
+
+@router.post("/flashcards/suggestions/{set_id}/accept")
+async def accept_or_reject_suggestion(
+    set_id: str,
+    request: AcceptSuggestionRequest,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Accept or reject a suggested flashcard set."""
+    try:
+        # Verify ownership
+        set_response = supabase.table("flashcard_sets").select("*").eq(
+            "id", set_id
+        ).eq("user_id", user_id).eq("is_suggested", True).execute()
+        
+        if not set_response.data:
+            raise HTTPException(status_code=404, detail="Suggested set not found")
+        
+        # Update acceptance status
+        update_data = {"is_accepted": request.accept}
+        
+        if not request.accept:
+            # If rejected, mark for deletion or hide
+            update_data["is_accepted"] = False
+        
+        supabase.table("flashcard_sets").update(update_data).eq("id", set_id).execute()
+        
+        return {
+            "success": True,
+            "accepted": request.accept
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/flashcards/sets", response_model=List[FlashcardSetResponse])
 async def get_flashcard_sets(
@@ -197,6 +330,26 @@ async def get_flashcard_sets(
         ).order("created_at", desc=True).execute()
         
         return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/flashcards/suggestions")
+async def get_suggested_flashcard_sets(
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """Get suggested flashcard sets for the current user."""
+    try:
+        response = supabase.rpc("get_suggested_flashcard_sets", {
+            "p_user_id": user_id
+        }).execute()
+        
+        return {
+            "success": True,
+            "suggestions": response.data or [],
+            "count": len(response.data) if response.data else 0
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

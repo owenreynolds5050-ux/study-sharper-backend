@@ -3,8 +3,10 @@ Flashcard Generation Service
 Generates AI-powered flashcards from note content using OpenRouter
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.services.open_router import get_chat_completion
+from app.services.embeddings import generate_embedding
+from datetime import datetime, timedelta
 import json
 import re
 
@@ -228,3 +230,344 @@ def update_mastery_level(current_level: int, was_correct: bool) -> int:
     else:
         # Reset to level 1 if incorrect
         return 1
+
+
+# ============================================================================
+# AUTO-SUGGESTED FLASHCARDS
+# ============================================================================
+
+async def generate_suggested_flashcards_for_user(user_id: str, supabase) -> List[Dict]:
+    """
+    Auto-generate suggested flashcard sets from user's recent notes.
+    Groups notes by topic and creates cohesive flashcard sets.
+    """
+    try:
+        # Get recent notes (last 7 days or last 10 notes)
+        seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        
+        notes_response = supabase.table("notes").select(
+            "id, title, content, extracted_text, created_at"
+        ).eq("user_id", user_id).gte(
+            "created_at", seven_days_ago
+        ).order("created_at", desc=True).limit(10).execute()
+        
+        if not notes_response.data or len(notes_response.data) == 0:
+            return []
+        
+        notes = notes_response.data
+        
+        # Group notes by topic using AI
+        grouped_notes = await group_notes_by_topic(notes)
+        
+        suggestions = []
+        
+        for topic_group in grouped_notes:
+            # Check if we already have a suggestion for this topic recently
+            existing = supabase.table("flashcard_sets").select("id").eq(
+                "user_id", user_id
+            ).eq("is_suggested", True).contains(
+                "source_note_ids", topic_group["note_ids"]
+            ).gte("suggestion_date", seven_days_ago).execute()
+            
+            if existing.data:
+                # Reuse existing suggestion
+                continue
+            
+            # Generate flashcards for this topic group
+            combined_text = "\n\n".join([
+                f"## {note['title']}\n\n{note.get('content') or note.get('extracted_text', '')}"
+                for note in topic_group["notes"]
+            ])
+            
+            if len(combined_text) > 8000:
+                combined_text = combined_text[:8000] + "\n\n[Content truncated...]"
+            
+            flashcards = generate_flashcards_from_text(
+                text=combined_text,
+                note_title=topic_group["topic"],
+                num_cards=10,
+                difficulty="medium"
+            )
+            
+            # Create suggested flashcard set
+            set_data = {
+                "user_id": user_id,
+                "title": f"📚 Suggested: {topic_group['topic']}",
+                "description": f"Auto-generated from your recent notes on {topic_group['topic']}",
+                "source_note_ids": topic_group["note_ids"],
+                "is_suggested": True,
+                "is_accepted": None,
+                "suggestion_date": datetime.now().isoformat(),
+                "ai_generated": True
+            }
+            
+            set_response = supabase.table("flashcard_sets").insert(set_data).execute()
+            
+            if set_response.data:
+                flashcard_set = set_response.data[0]
+                set_id = flashcard_set["id"]
+                
+                # Insert flashcards
+                flashcard_records = []
+                for i, card in enumerate(flashcards):
+                    flashcard_records.append({
+                        "user_id": user_id,
+                        "set_id": set_id,
+                        "front": card["front"],
+                        "back": card["back"],
+                        "explanation": card.get("explanation", ""),
+                        "position": i,
+                        "ai_generated": True
+                    })
+                
+                supabase.table("flashcards").insert(flashcard_records).execute()
+                
+                suggestions.append(flashcard_set)
+        
+        return suggestions
+        
+    except Exception as e:
+        print(f"Error generating suggestions: {str(e)}")
+        return []
+
+
+async def group_notes_by_topic(notes: List[Dict]) -> List[Dict]:
+    """
+    Group notes by topic using AI analysis.
+    Returns list of topic groups with their associated notes.
+    """
+    if len(notes) == 0:
+        return []
+    
+    # If only 1-2 notes, treat as single group
+    if len(notes) <= 2:
+        titles = [note.get("title", "Untitled") for note in notes]
+        return [{
+            "topic": " & ".join(titles),
+            "notes": notes,
+            "note_ids": [note["id"] for note in notes]
+        }]
+    
+    # Use AI to identify topics
+    note_summaries = "\n".join([
+        f"{i+1}. {note.get('title', 'Untitled')}: {(note.get('content') or note.get('extracted_text', ''))[:200]}"
+        for i, note in enumerate(notes)
+    ])
+    
+    system_prompt = """You are an expert at identifying topics and themes in study materials.
+Analyze the provided notes and group them by topic. Return a JSON array of topic groups.
+
+Each group should have:
+- "topic": A concise topic name (2-5 words)
+- "note_indices": Array of note indices (1-based) that belong to this topic
+
+Example output:
+[
+  {"topic": "Cell Biology", "note_indices": [1, 3, 5]},
+  {"topic": "Organic Chemistry", "note_indices": [2, 4]}
+]
+
+Only return the JSON array, no other text."""
+    
+    user_prompt = f"Group these notes by topic:\n\n{note_summaries}"
+    
+    try:
+        response = get_chat_completion([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ], model="anthropic/claude-3.5-sonnet")
+        
+        # Parse response
+        groups_data = json.loads(response.strip())
+        
+        # Convert to our format
+        topic_groups = []
+        for group in groups_data:
+            group_notes = [notes[i-1] for i in group["note_indices"] if 0 < i <= len(notes)]
+            if group_notes:
+                topic_groups.append({
+                    "topic": group["topic"],
+                    "notes": group_notes,
+                    "note_ids": [note["id"] for note in group_notes]
+                })
+        
+        return topic_groups
+        
+    except Exception as e:
+        print(f"Error grouping notes: {str(e)}")
+        # Fallback: treat all notes as one group
+        return [{
+            "topic": "Recent Study Materials",
+            "notes": notes,
+            "note_ids": [note["id"] for note in notes]
+        }]
+
+
+# ============================================================================
+# AI CHATBOT FOR FLASHCARDS
+# ============================================================================
+
+async def process_flashcard_chat_request(
+    user_id: str,
+    message: str,
+    context: Optional[Dict],
+    supabase
+) -> Dict:
+    """
+    Process AI chat request for flashcard generation.
+    Uses RAG to find relevant notes and generates flashcards based on user's natural language request.
+    """
+    try:
+        # Save user message to chat history
+        supabase.table("flashcard_chat_history").insert({
+            "user_id": user_id,
+            "message": message,
+            "role": "user",
+            "context": context
+        }).execute()
+        
+        # Get recent chat history for context (last 10 messages)
+        history_response = supabase.table("flashcard_chat_history").select(
+            "message, role"
+        ).eq("user_id", user_id).order(
+            "created_at", desc=True
+        ).limit(10).execute()
+        
+        chat_history = list(reversed(history_response.data)) if history_response.data else []
+        
+        # Use RAG to find relevant notes based on user's message
+        relevant_notes = await find_relevant_notes_for_flashcards(user_id, message, supabase)
+        
+        # Generate AI response
+        ai_response = await generate_flashcard_chat_response(
+            message=message,
+            chat_history=chat_history,
+            relevant_notes=relevant_notes
+        )
+        
+        # Save assistant response to chat history
+        supabase.table("flashcard_chat_history").insert({
+            "user_id": user_id,
+            "message": ai_response["message"],
+            "role": "assistant",
+            "context": ai_response.get("context")
+        }).execute()
+        
+        return ai_response
+        
+    except Exception as e:
+        raise Exception(f"Chat processing failed: {str(e)}")
+
+
+async def find_relevant_notes_for_flashcards(user_id: str, query: str, supabase) -> List[Dict]:
+    """
+    Use RAG to find notes relevant to the user's flashcard request.
+    """
+    try:
+        # Generate embedding for the query
+        query_embedding = generate_embedding(query)
+        
+        # Search for similar notes
+        response = supabase.rpc("search_similar_notes", {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.5,
+            "match_count": 5,
+            "p_user_id": user_id
+        }).execute()
+        
+        return response.data or []
+        
+    except Exception as e:
+        print(f"Error finding relevant notes: {str(e)}")
+        # Fallback: return recent notes
+        recent = supabase.table("notes").select(
+            "id, title, content, extracted_text"
+        ).eq("user_id", user_id).order(
+            "created_at", desc=True
+        ).limit(5).execute()
+        
+        return recent.data or []
+
+
+async def generate_flashcard_chat_response(
+    message: str,
+    chat_history: List[Dict],
+    relevant_notes: List[Dict]
+) -> Dict:
+    """
+    Generate AI response for flashcard chat with recommended prompts and actions.
+    """
+    # Build context from relevant notes
+    notes_context = ""
+    if relevant_notes:
+        notes_context = "\n\nRelevant notes found:\n"
+        for note in relevant_notes[:3]:
+            title = note.get("title", "Untitled")
+            content = (note.get("content") or note.get("extracted_text", ""))[:200]
+            notes_context += f"- {title}: {content}...\n"
+    
+    system_prompt = f"""You are a helpful AI assistant specialized in creating study flashcards.
+
+Your role:
+1. Help users create effective flashcard sets from their notes
+2. Suggest specific flashcard topics based on their study materials
+3. Provide recommended prompts for flashcard generation
+
+When responding:
+- Be concise and actionable
+- Suggest specific flashcard sets they can create
+- Reference their actual notes when relevant
+- Provide 2-3 recommended prompts they can use
+
+Available notes context:{notes_context}
+
+If the user asks to create flashcards, respond with a JSON object containing:
+{{
+  "message": "Your helpful response",
+  "action": "generate_flashcards",
+  "note_ids": ["id1", "id2"],
+  "num_cards": 10,
+  "difficulty": "medium",
+  "set_title": "Suggested title"
+}}
+
+Otherwise, respond with:
+{{
+  "message": "Your helpful response",
+  "recommended_prompts": [
+    "Create flashcards about...",
+    "Generate a quiz on...",
+    "Make study cards for..."
+  ]
+}}"""
+    
+    # Build message history
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add recent chat history (last 5 exchanges)
+    for msg in chat_history[-10:]:
+        messages.append({
+            "role": msg["role"],
+            "content": msg["message"]
+        })
+    
+    # Add current message
+    messages.append({"role": "user", "content": message})
+    
+    # Get AI response
+    response_text = get_chat_completion(messages, model="anthropic/claude-3.5-sonnet")
+    
+    # Try to parse as JSON
+    try:
+        response_data = json.loads(response_text.strip())
+        return response_data
+    except:
+        # If not JSON, return as plain message with default prompts
+        return {
+            "message": response_text,
+            "recommended_prompts": [
+                "Create flashcards from my recent biology notes",
+                "Generate a quiz on my chemistry study materials",
+                "Make flashcards about the topics I studied this week"
+            ]
+        }
