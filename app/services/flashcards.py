@@ -5,7 +5,7 @@ Generates AI-powered flashcards from note content using OpenRouter
 
 from typing import List, Dict, Any, Optional
 from app.services.open_router import get_chat_completion
-from app.services.embeddings import generate_embedding
+from app.services.embeddings import get_embedding_for_text
 from datetime import datetime, timedelta
 import json
 import re
@@ -465,7 +465,8 @@ async def find_relevant_notes_for_flashcards(user_id: str, query: str, supabase)
     """
     try:
         # Generate embedding for the query
-        query_embedding = generate_embedding(query)
+        embedding_result = get_embedding_for_text(query)
+        query_embedding = embedding_result["embedding"]
         
         # Search for similar notes
         response = supabase.rpc("search_similar_notes", {
