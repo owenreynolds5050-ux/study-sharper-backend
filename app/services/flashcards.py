@@ -7,8 +7,12 @@ from typing import List, Dict, Any, Optional
 from app.services.open_router import get_chat_completion
 from app.services.embeddings import get_embedding_for_text
 from datetime import datetime, timedelta
+import logging
 import json
 import re
+
+
+logger = logging.getLogger(__name__)
 
 
 def generate_flashcards_from_text(
@@ -98,28 +102,50 @@ Return only the JSON array of flashcards."""
     ]
     
     try:
-        # Get AI response
-        response = get_chat_completion(messages, model="anthropic/claude-3.5-sonnet")
-        
-        # Parse the JSON response
-        flashcards = parse_flashcard_response(response)
-        
-        # Validate and clean flashcards
-        valid_flashcards = []
-        for card in flashcards[:num_cards]:  # Limit to requested number
-            if validate_flashcard(card):
-                valid_flashcards.append({
-                    "front": card.get("front", "").strip(),
-                    "back": card.get("back", "").strip(),
-                    "explanation": card.get("explanation", "").strip()
-                })
-        
+        response = get_chat_completion(
+            messages=messages,
+            model="anthropic/claude-3.5-sonnet",
+            temperature=0.7,
+            max_tokens=2000,
+            response_format={"type": "json_object"}
+        )
+        logger.info("Flashcard generation raw response preview: %s", response[:500])
+
+        try:
+            parsed_response = json.loads(response)
+            if isinstance(parsed_response, dict) and "flashcards" in parsed_response:
+                flashcards = parsed_response["flashcards"]
+            elif isinstance(parsed_response, list):
+                flashcards = parsed_response
+            else:
+                flashcards = parse_flashcard_response(response)
+        except json.JSONDecodeError as parse_error:
+            logger.warning("Direct JSON parse failed: %s", parse_error)
+            flashcards = parse_flashcard_response(response)
+
+        valid_flashcards: List[Dict[str, str]] = []
+        validation_errors: List[str] = []
+        for index, card in enumerate(flashcards[:num_cards], start=1):
+            normalized_card = {
+                "front": str(card.get("front", "")).strip(),
+                "back": str(card.get("back", "")).strip(),
+                "explanation": str(card.get("explanation", "")).strip()
+            }
+            if validate_flashcard(normalized_card):
+                valid_flashcards.append(normalized_card)
+            else:
+                validation_errors.append(f"Card {index} failed validation")
+
         if not valid_flashcards:
+            if validation_errors:
+                raise ValueError("No valid flashcards generated. " + " ".join(validation_errors))
             raise ValueError("No valid flashcards generated from AI response")
-        
+
+        logger.info("Generated %d flashcards", len(valid_flashcards))
         return valid_flashcards
-        
+
     except Exception as e:
+        logger.error("Flashcard generation failed", exc_info=True)
         raise Exception(f"Failed to generate flashcards: {str(e)}")
 
 
@@ -129,31 +155,36 @@ def parse_flashcard_response(response: str) -> List[Dict[str, str]]:
     Handles various response formats and cleans the output.
     """
     try:
-        # Remove markdown code blocks if present
         response = response.strip()
         if response.startswith("```"):
-            # Extract content between code blocks
             match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
             if match:
                 response = match.group(1)
-        
-        # Parse JSON
-        flashcards = json.loads(response)
-        
-        # Ensure it's a list
+
+        first_bracket = response.find("[")
+        last_bracket = response.rfind("]")
+        if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
+            candidate = response[first_bracket:last_bracket + 1]
+            try:
+                flashcards = json.loads(candidate)
+            except json.JSONDecodeError:
+                flashcards = json.loads(response)
+        else:
+            flashcards = json.loads(response)
+
         if not isinstance(flashcards, list):
             raise ValueError("Response is not a JSON array")
-        
+
         return flashcards
-        
+
     except json.JSONDecodeError as e:
-        # Try to find JSON array in the response
+        logger.warning("Unable to parse AI flashcard response: %s", e)
         json_match = re.search(r'\[[\s\S]*\]', response)
         if json_match:
             try:
                 return json.loads(json_match.group(0))
-            except:
-                pass
+            except json.JSONDecodeError as nested_error:
+                logger.warning("Secondary JSON extraction failed: %s", nested_error)
         raise ValueError(f"Failed to parse flashcard JSON: {str(e)}")
 
 
