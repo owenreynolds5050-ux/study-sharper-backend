@@ -4,6 +4,7 @@ Generates AI-powered flashcards from note content using OpenRouter
 """
 
 from typing import List, Dict, Any, Optional
+from uuid import UUID
 from app.services.open_router import get_chat_completion
 from app.services.embeddings import get_embedding_for_text
 from datetime import datetime, timedelta
@@ -13,6 +14,77 @@ import re
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_uuid(value: Any) -> bool:
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _sanitize_ai_chat_response(response: Dict[str, Any], relevant_notes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    sanitized = dict(response or {})
+
+    if sanitized.get("action") != "generate_flashcards":
+        return sanitized
+
+    raw_note_ids = sanitized.get("note_ids") or []
+    valid_note_ids: List[str] = []
+
+    note_id_map = {}
+    note_title_map = {}
+
+    for note in relevant_notes:
+        note_id = note.get("id")
+        title = note.get("title")
+        if isinstance(note_id, str) and _is_valid_uuid(note_id):
+            note_id_map[note_id] = note_id
+            if isinstance(title, str) and title:
+                note_title_map[title.strip().lower()] = note_id
+
+    for candidate in raw_note_ids:
+        if not isinstance(candidate, str):
+            continue
+        stripped = candidate.strip()
+        if stripped in note_id_map:
+            valid_note_ids.append(note_id_map[stripped])
+            continue
+        mapped = note_title_map.get(stripped.lower())
+        if mapped:
+            valid_note_ids.append(mapped)
+
+    if not valid_note_ids and relevant_notes:
+        for note in relevant_notes:
+            note_id = note.get("id")
+            if isinstance(note_id, str) and _is_valid_uuid(note_id):
+                valid_note_ids.append(note_id)
+        valid_note_ids = valid_note_ids[: max(1, min(len(valid_note_ids), int(sanitized.get("num_cards") or 1)))]
+
+    valid_note_ids = list(dict.fromkeys([nid for nid in valid_note_ids if _is_valid_uuid(nid)]))
+
+    if valid_note_ids:
+        sanitized["note_ids"] = valid_note_ids
+    else:
+        sanitized.pop("action", None)
+        sanitized["note_ids"] = []
+
+    try:
+        sanitized["num_cards"] = max(1, int(sanitized.get("num_cards") or 10))
+    except (TypeError, ValueError):
+        sanitized["num_cards"] = 10
+
+    difficulty = str(sanitized.get("difficulty") or "medium").lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        sanitized["difficulty"] = "medium"
+    else:
+        sanitized["difficulty"] = difficulty
+
+    if "set_title" in sanitized and sanitized["set_title"] is not None:
+        sanitized["set_title"] = str(sanitized["set_title"]).strip() or None
+
+    return sanitized
 
 
 def generate_flashcards_from_text(
@@ -475,6 +547,8 @@ async def process_flashcard_chat_request(
             chat_history=chat_history,
             relevant_notes=relevant_notes
         )
+        
+        ai_response = _sanitize_ai_chat_response(ai_response, relevant_notes)
         
         # Save assistant response to chat history
         supabase.table("flashcard_chat_history").insert({
