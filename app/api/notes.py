@@ -70,14 +70,30 @@ async def delete_folder(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class NoteLightweight(BaseModel):
+    """Lightweight note model for list views - excludes heavy content fields."""
+    id: str
+    user_id: str
+    title: str
+    tags: Optional[List[str]] = None
+    folder_id: Optional[str] = None
+    file_path: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
 class Note(BaseModel):
+    """Full note model with all fields including content."""
     id: str
     user_id: str
     title: str
     content: Optional[str] = None
+    extracted_text: Optional[str] = None
+    summary: Optional[str] = None
+    transcription: Optional[str] = None
     tags: Optional[List[str]] = None
     folder_id: Optional[str] = None
     file_path: Optional[str] = None
+    file_size: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -90,13 +106,21 @@ class CreateNote(BaseModel):
 class UpdateNote(BaseModel):
     folder_id: Optional[str] = None
 
-@router.get("/notes", response_model=List[Note])
+@router.get("/notes", response_model=List[NoteLightweight])
 def get_notes(
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
+    """
+    Get lightweight note list for a user.
+    Returns only essential fields (id, title, folder_id, tags, timestamps).
+    Optimized for fast loading with 1000+ notes.
+    """
     try:
-        response = supabase.table("notes").select("*").eq("user_id", user_id).order("updated_at").execute()
+        # Select only lightweight fields - excludes content, extracted_text, summary, transcription
+        response = supabase.table("notes").select(
+            "id, user_id, title, tags, folder_id, file_path, created_at, updated_at"
+        ).eq("user_id", user_id).order("updated_at", desc=True).execute()
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -132,6 +156,28 @@ async def update_note(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/notes/{note_id}", response_model=Note)
+def get_note(
+    note_id: str,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Get full note data including content, extracted_text, and all other fields.
+    Used for viewing/editing individual notes.
+    """
+    try:
+        response = supabase.table("notes").select("*").eq("id", note_id).eq("user_id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="Note not found")
+        
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/notes/{note_id}")
 async def delete_note(
     note_id: str,
@@ -141,6 +187,10 @@ async def delete_note(
     try:
         # First, get the note to find the file path
         response = supabase.table("notes").select("file_path").eq("id", note_id).eq("user_id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=404, detail="Note not found")
+        
         note = response.data[0]
 
         # If there's a file, delete it from storage
@@ -150,5 +200,7 @@ async def delete_note(
         # Then, delete the note from the database
         response = supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
