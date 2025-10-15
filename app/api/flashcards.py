@@ -13,7 +13,9 @@ from app.services.flashcards import (
     calculate_next_review_interval,
     update_mastery_level
 )
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -193,6 +195,7 @@ async def generate_flashcards(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to generate flashcards: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate flashcards: {str(e)}")
 
 
@@ -217,6 +220,7 @@ async def generate_suggested_flashcards(
         }
         
     except Exception as e:
+        logger.error(f"Failed to generate suggestions: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate suggestions: {str(e)}")
 
 
@@ -243,6 +247,7 @@ async def flashcard_ai_chat(
         return response
         
     except Exception as e:
+        logger.error(f"Chat request failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat request failed: {str(e)}")
 
 
@@ -279,6 +284,7 @@ async def create_blank_flashcard_set(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to create set: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create set: {str(e)}")
 
 
@@ -331,7 +337,8 @@ async def get_flashcard_sets(
         
         return response.data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to get flashcard sets: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get flashcard sets: {str(e)}")
 
 
 @router.get("/flashcards/suggestions")
@@ -351,7 +358,8 @@ async def get_suggested_flashcard_sets(
             "count": len(response.data) if response.data else 0
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to get suggested flashcard sets: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get suggested flashcard sets: {str(e)}")
 
 
 @router.get("/flashcards/sets/{set_id}")
