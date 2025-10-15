@@ -7,3 +7,8 @@ python-docx
 python-multipart
 pyjwt
 requests
+celery
+redis
+sentence-transformers
+pydantic
+httpx
