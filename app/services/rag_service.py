@@ -41,12 +41,14 @@ class RAGService:
         """
         try:
             # Generate embedding for query
-            query_embedding = get_embedding_for_text(query)
-            
-            if not query_embedding:
+            embedding_result = get_embedding_for_text(query)
+
+            if not embedding_result or "embedding" not in embedding_result:
                 logger.error("Failed to generate query embedding")
                 return []
-            
+
+            query_embedding = embedding_result["embedding"]
+
             # Convert to JSONB format for RPC call
             embedding_json = json.dumps(query_embedding)
             

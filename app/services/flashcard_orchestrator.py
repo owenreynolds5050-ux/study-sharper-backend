@@ -259,9 +259,15 @@ class FlashcardOrchestrator:
         if not notes:
             # No notes found or not requested - use general knowledge
             context_text = f"Generate flashcards about {state.subtopic} in {state.subject}."
+            source_note_ids: List[str] = []
         else:
             # Combine notes content
             context_text = self.rag_service.combine_notes_content(notes, max_length=6000)
+            source_note_ids = [
+                note.get("note_id") or note.get("id")
+                for note in notes
+                if note.get("note_id") or note.get("id")
+            ]
         
         # Return immediate "generating" response
         generation_message = GENERATION_START_TEMPLATE.format(
@@ -284,7 +290,7 @@ class FlashcardOrchestrator:
                 "subtopic": state.subtopic,
                 "length": requested_length,
                 "difficulty": state.difficulty,
-                "source_note_ids": [note["id"] for note in notes] if notes else []
+                "source_note_ids": source_note_ids
             }
         }
     

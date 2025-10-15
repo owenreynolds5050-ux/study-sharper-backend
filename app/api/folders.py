@@ -260,3 +260,12 @@ async def get_folder_notes_count(
     except Exception as e:
         logger.error(f"Error counting notes in folder: {e}")
         raise HTTPException(status_code=500, detail="Failed to count notes")
+
+@router.get("/folders/health")
+async def folders_health_check():
+    """Health check endpoint for folders API"""
+    return {
+        "status": "healthy",
+        "service": "folders",
+        "version": "1.0.0"
+    }

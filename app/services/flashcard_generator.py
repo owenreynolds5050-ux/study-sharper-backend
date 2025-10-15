@@ -5,11 +5,9 @@ Generates flashcards using Sonnet 3.5 and verifies with web-enabled LLM
 
 from typing import List, Dict, Any, Optional, Tuple
 from app.services.open_router import get_chat_completion
-from app.services.embeddings import get_embedding_for_text
 import logging
 import json
 import hashlib
-import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

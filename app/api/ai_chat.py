@@ -214,9 +214,20 @@ async def ai_chat(
         raise
     except Exception as e:
         logger.error(f"Error in AI chat endpoint: {str(e)}", exc_info=True)
+        
+        # Provide more specific error messages for debugging
+        error_detail = "An error occurred while processing your request."
+        
+        if "embedding" in str(e).lower():
+            error_detail = "Error generating embeddings. Please check sentence-transformers installation."
+        elif "supabase" in str(e).lower():
+            error_detail = "Database connection error. Please check Supabase configuration."
+        elif "openrouter" in str(e).lower() or "api" in str(e).lower():
+            error_detail = "AI service error. Please check OpenRouter API key and connection."
+        
         raise HTTPException(
             status_code=500,
-            detail="An error occurred while processing your request. Please try again."
+            detail=f"{error_detail} Error: {str(e)[:100]}"
         )
 
 
