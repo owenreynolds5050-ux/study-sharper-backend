@@ -9,6 +9,12 @@ from app.agents.context.rag_agent import RAGAgent
 from app.agents.context.user_profile_agent import UserProfileAgent
 from app.agents.context.progress_agent import ProgressAgent
 from app.agents.context.conversation_agent import ConversationAgent
+from app.agents.tasks.flashcard_agent import FlashcardAgent
+from app.agents.tasks.quiz_agent import QuizAgent
+from app.agents.tasks.summary_agent import SummaryAgent
+from app.agents.tasks.chat_agent import ChatAgent
+from pydantic import BaseModel
+from typing import Optional
 import logging
 
 # Configure logging
@@ -66,14 +72,15 @@ def health_check():
 @app.post("/api/ai/agent-test")
 async def test_agent_system(request: AgentRequest):
     """
-    Test endpoint for multi-agent system (Phase 2: Context Gathering).
+    Test endpoint for multi-agent system (Phase 3: Task Execution).
     Does not affect existing endpoints - purely for testing agent infrastructure.
     
     This endpoint demonstrates:
     - Base agent architecture
     - Request routing and intent classification
     - Context gathering from multiple sources
-    - Parallel agent execution
+    - Task execution with LLM
+    - Content generation (flashcards, quizzes, summaries, chat)
     - Progress tracking capability
     """
     try:
@@ -100,8 +107,8 @@ async def test_agent_system(request: AgentRequest):
             "execution_time_ms": result.execution_time_ms,
             "model_used": result.model_used,
             "progress_updates": progress_updates,
-            "message": "Phase 2 test successful - context gathering working",
-            "phase": 2
+            "message": "Phase 3 test successful - task execution working",
+            "phase": 3
         }
     
     except Exception as e:
@@ -110,7 +117,7 @@ async def test_agent_system(request: AgentRequest):
             "status": "error",
             "error": str(e),
             "message": "Agent system test failed",
-            "phase": 2
+            "phase": 3
         }
 
 
@@ -172,4 +179,86 @@ async def test_conversation_agent(user_id: str, session_id: str, limit: int = 10
         return result.dict()
     except Exception as e:
         logging.error(f"Conversation test error: {e}")
+        return {"error": str(e)}
+
+
+# Task agent test endpoints (Phase 3)
+
+class FlashcardTestRequest(BaseModel):
+    content: str
+    count: int = 10
+    difficulty: str = "medium"
+
+class QuizTestRequest(BaseModel):
+    content: str
+    question_count: int = 10
+    difficulty: str = "medium"
+
+class SummaryTestRequest(BaseModel):
+    content: str
+    length: str = "medium"
+    style: str = "bullet_points"
+
+class ChatTestRequest(BaseModel):
+    message: str
+
+@app.post("/api/ai/test-flashcards")
+async def test_flashcards(request: FlashcardTestRequest):
+    """Test flashcard generation directly"""
+    try:
+        agent = FlashcardAgent()
+        result = await agent.execute({
+            "content": request.content,
+            "count": request.count,
+            "difficulty": request.difficulty
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Flashcard test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-quiz")
+async def test_quiz(request: QuizTestRequest):
+    """Test quiz generation directly"""
+    try:
+        agent = QuizAgent()
+        result = await agent.execute({
+            "content": request.content,
+            "question_count": request.question_count,
+            "difficulty": request.difficulty
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Quiz test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-summary")
+async def test_summary(request: SummaryTestRequest):
+    """Test summary generation directly"""
+    try:
+        agent = SummaryAgent()
+        result = await agent.execute({
+            "content": request.content,
+            "length": request.length,
+            "style": request.style
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Summary test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-chat")
+async def test_chat(request: ChatTestRequest):
+    """Test chat agent directly"""
+    try:
+        agent = ChatAgent()
+        result = await agent.execute({
+            "message": request.message
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Chat test error: {e}")
         return {"error": str(e)}

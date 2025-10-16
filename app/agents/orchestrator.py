@@ -11,6 +11,11 @@ from .context.user_profile_agent import UserProfileAgent
 from .context.progress_agent import ProgressAgent
 from .context.conversation_agent import ConversationAgent
 from .context.smart_defaults_agent import SmartDefaultsAgent
+from .tasks.flashcard_agent import FlashcardAgent
+from .tasks.quiz_agent import QuizAgent
+from .tasks.exam_agent import ExamAgent
+from .tasks.summary_agent import SummaryAgent
+from .tasks.chat_agent import ChatAgent
 import asyncio
 import logging
 import time
@@ -40,6 +45,13 @@ class MainOrchestrator(BaseAgent):
         self.progress_agent = ProgressAgent()
         self.conversation_agent = ConversationAgent()
         self.smart_defaults_agent = SmartDefaultsAgent()
+        
+        # Initialize task agents (Phase 3)
+        self.flashcard_agent = FlashcardAgent()
+        self.quiz_agent = QuizAgent()
+        self.exam_agent = ExamAgent()
+        self.summary_agent = SummaryAgent()
+        self.chat_agent = ChatAgent()
         
         logger.info(f"MainOrchestrator initialized with model: {self.model}")
     
@@ -125,33 +137,26 @@ class MainOrchestrator(BaseAgent):
             raise ValueError(f"Invalid request format: {e}")
         
         # Step 1: Classify intent
-        await self._send_progress(1, 4, self.name, "Analyzing request...")
+        await self._send_progress(1, 5, self.name, "Analyzing request...")
         intent = self._quick_classify(request)
         logger.info(f"Intent classified as: {intent}")
         
         # Step 2: Gather context (Phase 2)
-        await self._send_progress(2, 4, self.name, "Gathering context...")
+        await self._send_progress(2, 5, self.name, "Gathering context...")
         context_data = await self._gather_context(request)
         
-        # Step 3: Create execution plan
-        await self._send_progress(3, 4, self.name, "Creating execution plan...")
-        plan = self._create_execution_plan(intent, request)
+        # Step 3: Execute task agent (Phase 3)
+        await self._send_progress(3, 5, "task_agent", f"Executing {intent}...")
+        task_result = await self._execute_task(intent, request, context_data)
         
-        # Step 4: Complete
-        await self._send_progress(4, 4, self.name, "Analysis complete")
+        # Step 4: Format response
+        await self._send_progress(4, 5, "formatter", "Formatting response...")
+        final_response = self._format_response(task_result, intent, request)
         
-        # Return Phase 2 response with context
-        return {
-            "intent": intent,
-            "context": context_data,
-            "execution_plan": plan.dict(),
-            "message": f"Phase 2: Context gathering complete for {intent}",
-            "original_message": request.message,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "phase": 2,
-            "next_phase": "Phase 3 will add task execution agents"
-        }
+        # Step 5: Complete
+        await self._send_progress(5, 5, self.name, "Complete")
+        
+        return final_response
     
     def _quick_classify(self, request: AgentRequest) -> str:
         """
@@ -334,3 +339,116 @@ class MainOrchestrator(BaseAgent):
             del compiled_context["errors"]
         
         return compiled_context
+    
+    async def _execute_task(
+        self,
+        intent: str,
+        request: AgentRequest,
+        context: Dict[str, Any]
+    ) -> AgentResult:
+        """
+        Execute the appropriate task agent based on intent.
+        
+        Args:
+            intent: Classified intent
+            request: Original request
+            context: Gathered context data
+            
+        Returns:
+            AgentResult from task execution
+        """
+        
+        # Prepare task input
+        task_input = {
+            "message": request.message,
+            "options": request.options or {}
+        }
+        
+        # Route to appropriate agent
+        if intent == RequestType.FLASHCARD_GENERATION.value:
+            task_input.update({
+                "count": request.options.get("count", 10) if request.options else 10,
+                "difficulty": request.options.get("difficulty") if request.options else None,
+                "topic": request.options.get("topic") if request.options else None,
+                "content": request.options.get("content") if request.options else None
+            })
+            logger.info("Routing to Flashcard Agent")
+            return await self.flashcard_agent.execute(task_input, context)
+        
+        elif intent == RequestType.QUIZ_GENERATION.value:
+            task_input.update({
+                "question_count": request.options.get("question_count", 10) if request.options else 10,
+                "difficulty": request.options.get("difficulty") if request.options else None,
+                "question_types": request.options.get("question_types") if request.options else None,
+                "content": request.options.get("content") if request.options else None
+            })
+            logger.info("Routing to Quiz Agent")
+            return await self.quiz_agent.execute(task_input, context)
+        
+        elif intent == RequestType.EXAM_GENERATION.value:
+            task_input.update({
+                "duration_minutes": request.options.get("duration_minutes", 60) if request.options else 60,
+                "difficulty": request.options.get("difficulty") if request.options else None,
+                "sections": request.options.get("sections") if request.options else None,
+                "content": request.options.get("content") if request.options else None
+            })
+            logger.info("Routing to Exam Agent")
+            return await self.exam_agent.execute(task_input, context)
+        
+        elif intent == RequestType.SUMMARY_GENERATION.value:
+            task_input.update({
+                "length": request.options.get("length", "medium") if request.options else "medium",
+                "style": request.options.get("style", "bullet_points") if request.options else "bullet_points",
+                "focus_areas": request.options.get("focus_areas") if request.options else None,
+                "content": request.options.get("content") if request.options else None
+            })
+            logger.info("Routing to Summary Agent")
+            return await self.summary_agent.execute(task_input, context)
+        
+        else:  # Default to chat for everything else
+            logger.info("Routing to Chat Agent")
+            return await self.chat_agent.execute(task_input, context)
+    
+    def _format_response(
+        self,
+        task_result: AgentResult,
+        intent: str,
+        request: AgentRequest
+    ) -> Dict[str, Any]:
+        """
+        Format final response for user.
+        
+        Args:
+            task_result: Result from task agent
+            intent: Classified intent
+            request: Original request
+            
+        Returns:
+            Formatted response dictionary
+        """
+        
+        if not task_result.success:
+            logger.error(f"Task execution failed: {task_result.error}")
+            return {
+                "success": False,
+                "error": task_result.error,
+                "intent": intent,
+                "user_id": request.user_id,
+                "phase": 3
+            }
+        
+        return {
+            "success": True,
+            "intent": intent,
+            "data": task_result.data,
+            "metadata": {
+                "execution_time_ms": task_result.execution_time_ms,
+                "tokens_used": task_result.tokens_used,
+                "model_used": task_result.model_used,
+                "confidence_score": task_result.confidence_score
+            },
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "phase": 3,
+            "message": f"Successfully completed {intent}"
+        }
