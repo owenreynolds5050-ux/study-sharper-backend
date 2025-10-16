@@ -6,6 +6,11 @@ Routes requests and coordinates subagents (Phase 1: Simple routing only)
 from typing import Dict, Any, List, Callable
 from .base import BaseAgent, AgentType, AgentResult
 from .models import AgentRequest, RequestType, AgentProgress, ExecutionPlan
+from .context.rag_agent import RAGAgent
+from .context.user_profile_agent import UserProfileAgent
+from .context.progress_agent import ProgressAgent
+from .context.conversation_agent import ConversationAgent
+from .context.smart_defaults_agent import SmartDefaultsAgent
 import asyncio
 import logging
 import time
@@ -28,6 +33,14 @@ class MainOrchestrator(BaseAgent):
             description="Routes requests and coordinates subagents"
         )
         self.progress_callbacks: List[Callable] = []
+        
+        # Initialize context agents (Phase 2)
+        self.rag_agent = RAGAgent()
+        self.profile_agent = UserProfileAgent()
+        self.progress_agent = ProgressAgent()
+        self.conversation_agent = ConversationAgent()
+        self.smart_defaults_agent = SmartDefaultsAgent()
+        
         logger.info(f"MainOrchestrator initialized with model: {self.model}")
     
     def add_progress_callback(self, callback: Callable):
@@ -111,30 +124,33 @@ class MainOrchestrator(BaseAgent):
             logger.error(f"Failed to parse AgentRequest: {e}")
             raise ValueError(f"Invalid request format: {e}")
         
-        # Send initial progress
-        await self._send_progress(1, 3, self.name, "Analyzing request...")
-        
-        # Classify intent using pattern matching (no LLM in Phase 1)
+        # Step 1: Classify intent
+        await self._send_progress(1, 4, self.name, "Analyzing request...")
         intent = self._quick_classify(request)
         logger.info(f"Intent classified as: {intent}")
         
-        await self._send_progress(2, 3, self.name, f"Intent identified: {intent}")
+        # Step 2: Gather context (Phase 2)
+        await self._send_progress(2, 4, self.name, "Gathering context...")
+        context_data = await self._gather_context(request)
         
-        # Create execution plan (Phase 1: just a placeholder)
+        # Step 3: Create execution plan
+        await self._send_progress(3, 4, self.name, "Creating execution plan...")
         plan = self._create_execution_plan(intent, request)
         
-        await self._send_progress(3, 3, self.name, "Request analysis complete")
+        # Step 4: Complete
+        await self._send_progress(4, 4, self.name, "Analysis complete")
         
-        # Return Phase 1 response
+        # Return Phase 2 response with context
         return {
             "intent": intent,
-            "message": f"Orchestrator received request of type: {request.type}",
-            "original_message": request.message,
+            "context": context_data,
             "execution_plan": plan.dict(),
-            "next_phase": "In Phase 2, we'll add actual subagent execution",
+            "message": f"Phase 2: Context gathering complete for {intent}",
+            "original_message": request.message,
             "user_id": request.user_id,
             "session_id": request.session_id,
-            "phase": 1
+            "phase": 2,
+            "next_phase": "Phase 3 will add task execution agents"
         }
     
     def _quick_classify(self, request: AgentRequest) -> str:
@@ -230,3 +246,91 @@ class MainOrchestrator(BaseAgent):
         
         logger.debug(f"Execution plan created with {len(plan.steps)} steps")
         return plan
+    
+    async def _gather_context(self, request: AgentRequest) -> Dict[str, Any]:
+        """
+        Gather context from multiple sources in parallel.
+        Intelligently determines which context to gather based on request.
+        
+        Args:
+            request: The agent request
+            
+        Returns:
+            Dictionary with gathered context from various agents
+        """
+        
+        context_tasks = []
+        message_lower = request.message.lower()
+        
+        # Always get user profile (lightweight and useful)
+        context_tasks.append(
+            ("profile", self.profile_agent.execute({
+                "user_id": request.user_id
+            }))
+        )
+        
+        # Get conversation history if session exists
+        if request.session_id:
+            context_tasks.append(
+                ("conversation", self.conversation_agent.execute({
+                    "session_id": request.session_id,
+                    "user_id": request.user_id,
+                    "limit": 10
+                }))
+            )
+        
+        # Get RAG context if message suggests content retrieval
+        if any(word in message_lower for word in ["notes", "from my", "about", "on", "flashcard", "quiz"]):
+            context_tasks.append(
+                ("notes", self.rag_agent.execute({
+                    "query": request.message,
+                    "user_id": request.user_id,
+                    "note_ids": request.explicit_note_ids,
+                    "top_k": 5
+                }))
+            )
+        
+        # Get progress if request involves study planning or performance
+        if any(word in message_lower for word in ["study", "progress", "performance", "how am i", "stats"]):
+            context_tasks.append(
+                ("progress", self.progress_agent.execute({
+                    "user_id": request.user_id,
+                    "days_back": 30
+                }))
+            )
+        
+        # Execute all context gathering in parallel
+        logger.info(f"Gathering {len(context_tasks)} context sources in parallel")
+        results = await asyncio.gather(*[task for _, task in context_tasks], return_exceptions=True)
+        
+        # Compile context
+        compiled_context = {
+            "profile": None,
+            "conversation": None,
+            "notes": None,
+            "progress": None,
+            "errors": []
+        }
+        
+        for i, result in enumerate(results):
+            context_name = context_tasks[i][0]
+            
+            if isinstance(result, Exception):
+                logger.error(f"Context gathering failed for {context_name}: {result}")
+                compiled_context["errors"].append({
+                    "source": context_name,
+                    "error": str(result)
+                })
+                continue
+            
+            if result.success and result.data:
+                compiled_context[context_name] = result.data
+                logger.debug(f"Context gathered from {context_name}")
+            else:
+                logger.warning(f"Context agent {context_name} returned no data")
+        
+        # Remove errors key if empty
+        if not compiled_context["errors"]:
+            del compiled_context["errors"]
+        
+        return compiled_context
