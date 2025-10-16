@@ -217,17 +217,22 @@ async def ai_chat(
         
         # Provide more specific error messages for debugging
         error_detail = "An error occurred while processing your request."
+        error_type = type(e).__name__
         
-        if "embedding" in str(e).lower():
+        if "openrouter api key not configured" in str(e).lower():
+            error_detail = "OpenRouter API key is not configured. Please set OPENROUTER_API_KEY in environment variables."
+        elif "embedding" in str(e).lower():
             error_detail = "Error generating embeddings. Please check sentence-transformers installation."
-        elif "supabase" in str(e).lower():
-            error_detail = "Database connection error. Please check Supabase configuration."
-        elif "openrouter" in str(e).lower() or "api" in str(e).lower():
+        elif "supabase" in str(e).lower() or "relation" in str(e).lower():
+            error_detail = "Database error. Please check Supabase configuration and ensure all tables exist."
+        elif "openrouter" in str(e).lower() or "failed to get ai completion" in str(e).lower():
             error_detail = "AI service error. Please check OpenRouter API key and connection."
+        elif "search_similar_notes" in str(e).lower():
+            error_detail = "Vector search function missing. Please run the note_embeddings migration."
         
         raise HTTPException(
             status_code=500,
-            detail=f"{error_detail} Error: {str(e)[:100]}"
+            detail=f"{error_detail} ({error_type}: {str(e)[:200]})"
         )
 
 
@@ -238,8 +243,33 @@ async def ai_chat(
 @router.get("/ai/chat/health")
 async def health_check():
     """Check if AI chat service is operational."""
-    return {
+    from app.core.config import OPENROUTER_API_KEY, SUPABASE_URL, SUPABASE_KEY
+    
+    checks = {
         "status": "healthy",
         "service": "ai_chat",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "configuration": {
+            "openrouter_configured": bool(OPENROUTER_API_KEY and OPENROUTER_API_KEY != "your-openrouter-api-key"),
+            "supabase_url_configured": bool(SUPABASE_URL and "your-project" not in SUPABASE_URL),
+            "supabase_key_configured": bool(SUPABASE_KEY and "your-service-role" not in SUPABASE_KEY),
+        }
     }
+    
+    # Check if sentence-transformers is available
+    try:
+        from sentence_transformers import SentenceTransformer
+        checks["configuration"]["sentence_transformers_available"] = True
+    except ImportError:
+        checks["configuration"]["sentence_transformers_available"] = False
+    
+    # If any critical config is missing, mark as unhealthy
+    if not all([
+        checks["configuration"]["openrouter_configured"],
+        checks["configuration"]["supabase_url_configured"],
+        checks["configuration"]["supabase_key_configured"]
+    ]):
+        checks["status"] = "unhealthy"
+        checks["message"] = "Missing required configuration"
+    
+    return checks

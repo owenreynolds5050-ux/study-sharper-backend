@@ -18,6 +18,15 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+@router.get("/flashcards/health")
+async def flashcards_health_check():
+    """Health check endpoint for flashcards API"""
+    return {
+        "status": "healthy",
+        "service": "flashcards",
+        "version": "1.0.0"
+    }
+
 
 # ============================================================================
 # REQUEST/RESPONSE MODELS
