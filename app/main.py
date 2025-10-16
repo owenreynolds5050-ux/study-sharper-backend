@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.api import notes, chat, upload, embeddings, folders, flashcards, ai_chat, flashcards_chat, flashcard_chatbot
+from app.api import notes, chat, upload, embeddings, folders, flashcards, ai_chat
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
 from app.agents.orchestrator import MainOrchestrator
@@ -71,8 +71,6 @@ app.include_router(embeddings.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(flashcards.router, prefix="/api")
 app.include_router(ai_chat.router, prefix="/api")
-app.include_router(flashcards_chat.router, prefix="/api")
-app.include_router(flashcard_chatbot.router, prefix="/api")
 
 @app.get("/")
 def read_root():
