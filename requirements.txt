@@ -12,3 +12,4 @@ redis
 sentence-transformers
 pydantic
 httpx
+slowapi
