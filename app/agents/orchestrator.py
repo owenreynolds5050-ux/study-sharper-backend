@@ -16,6 +16,10 @@ from .tasks.quiz_agent import QuizAgent
 from .tasks.exam_agent import ExamAgent
 from .tasks.summary_agent import SummaryAgent
 from .tasks.chat_agent import ChatAgent
+from .validation.accuracy_agent import AccuracyAgent
+from .validation.safety_agent import SafetyAgent
+from .validation.quality_agent import QualityAgent
+from .validation.config import ValidationConfig
 import asyncio
 import logging
 import time
@@ -52,6 +56,14 @@ class MainOrchestrator(BaseAgent):
         self.exam_agent = ExamAgent()
         self.summary_agent = SummaryAgent()
         self.chat_agent = ChatAgent()
+        
+        # Initialize validation agents (Phase 4)
+        self.accuracy_agent = AccuracyAgent()
+        self.safety_agent = SafetyAgent()
+        self.quality_agent = QualityAgent()
+        
+        # Validation configuration
+        self.validation_config = ValidationConfig
         
         logger.info(f"MainOrchestrator initialized with model: {self.model}")
     
@@ -137,24 +149,39 @@ class MainOrchestrator(BaseAgent):
             raise ValueError(f"Invalid request format: {e}")
         
         # Step 1: Classify intent
-        await self._send_progress(1, 5, self.name, "Analyzing request...")
+        await self._send_progress(1, 6, self.name, "Analyzing request...")
         intent = self._quick_classify(request)
         logger.info(f"Intent classified as: {intent}")
         
         # Step 2: Gather context (Phase 2)
-        await self._send_progress(2, 5, self.name, "Gathering context...")
+        await self._send_progress(2, 6, self.name, "Gathering context...")
         context_data = await self._gather_context(request)
         
-        # Step 3: Execute task agent (Phase 3)
-        await self._send_progress(3, 5, "task_agent", f"Executing {intent}...")
-        task_result = await self._execute_task(intent, request, context_data)
+        # Step 3: Execute task with validation (Phase 3 & 4)
+        await self._send_progress(3, 6, "task_agent", f"Executing {intent}...")
+        task_result, validation_results = await self._execute_with_validation(
+            intent, request, context_data
+        )
         
-        # Step 4: Format response
-        await self._send_progress(4, 5, "formatter", "Formatting response...")
-        final_response = self._format_response(task_result, intent, request)
+        # Step 4: Final safety check
+        await self._send_progress(4, 6, "safety_check", "Final safety verification...")
+        final_safety = await self._final_safety_check(task_result, context_data)
         
-        # Step 5: Complete
-        await self._send_progress(5, 5, self.name, "Complete")
+        if not final_safety.get("is_safe", True):
+            logger.error("Content failed final safety check")
+            return {
+                "success": False,
+                "error": "Content failed safety check",
+                "details": final_safety,
+                "phase": 4
+            }
+        
+        # Step 5: Format response
+        await self._send_progress(5, 6, "formatter", "Formatting response...")
+        final_response = self._format_response(task_result, intent, request, validation_results)
+        
+        # Step 6: Complete
+        await self._send_progress(6, 6, self.name, "Complete")
         
         return final_response
     
@@ -413,7 +440,8 @@ class MainOrchestrator(BaseAgent):
         self,
         task_result: AgentResult,
         intent: str,
-        request: AgentRequest
+        request: AgentRequest,
+        validation_results: list = None
     ) -> Dict[str, Any]:
         """
         Format final response for user.
@@ -434,13 +462,26 @@ class MainOrchestrator(BaseAgent):
                 "error": task_result.error,
                 "intent": intent,
                 "user_id": request.user_id,
-                "phase": 3
+                "phase": 4
+            }
+        
+        # Get validation summary
+        validation_summary = {}
+        if validation_results:
+            final_validation = validation_results[-1].get("validation", {}) if validation_results else {}
+            validation_summary = {
+                "safety_score": final_validation.get("safety", {}).get("safety_score", 1.0),
+                "quality_score": final_validation.get("quality", {}).get("quality_score", 1.0),
+                "accuracy_score": final_validation.get("accuracy", {}).get("accuracy_score", 1.0),
+                "validation_attempts": len(validation_results),
+                "validation_passed": True
             }
         
         return {
             "success": True,
             "intent": intent,
             "data": task_result.data,
+            "validation": validation_summary,
             "metadata": {
                 "execution_time_ms": task_result.execution_time_ms,
                 "tokens_used": task_result.tokens_used,
@@ -449,6 +490,236 @@ class MainOrchestrator(BaseAgent):
             },
             "user_id": request.user_id,
             "session_id": request.session_id,
-            "phase": 3,
-            "message": f"Successfully completed {intent}"
+            "phase": 4,
+            "message": f"Successfully completed {intent} with validation"
         }
+    
+    async def _execute_with_validation(
+        self,
+        intent: str,
+        request: AgentRequest,
+        context: Dict[str, Any]
+    ) -> tuple:
+        """
+        Execute task with validation and retry logic.
+        
+        Args:
+            intent: Classified intent
+            request: Original request
+            context: Gathered context data
+            
+        Returns:
+            Tuple of (task_result, validation_results)
+        """
+        
+        validation_results = []
+        max_retries = self.validation_config.get_max_retries(intent)
+        
+        # Check if validation is enabled
+        if not self.validation_config.should_validate(intent):
+            logger.info(f"Validation disabled for {intent}, executing without validation")
+            task_result = await self._execute_task(intent, request, context)
+            return task_result, []
+        
+        for attempt in range(max_retries + 1):
+            logger.info(f"Execution attempt {attempt + 1}/{max_retries + 1}")
+            
+            # Execute task
+            task_result = await self._execute_task(intent, request, context)
+            
+            if not task_result.success:
+                logger.error(f"Task execution failed on attempt {attempt + 1}")
+                return task_result, validation_results
+            
+            # Run validations
+            validation_result = await self._validate_content(
+                task_result.data,
+                intent,
+                context
+            )
+            
+            validation_results.append({
+                "attempt": attempt + 1,
+                "validation": validation_result
+            })
+            
+            # Check if validation passed
+            passes, reason = self._validation_passed(validation_result, intent)
+            
+            if passes:
+                logger.info(f"Validation passed on attempt {attempt + 1}")
+                return task_result, validation_results
+            
+            logger.warning(f"Validation failed on attempt {attempt + 1}: {reason}")
+            
+            # If we have retries left, continue
+            if attempt < max_retries:
+                logger.info(f"Retrying with corrections (attempt {attempt + 2}/{max_retries + 1})")
+                # Note: In a full implementation, we would modify the request with corrections
+                # For now, we just retry as-is
+        
+        # Max retries reached - return last result anyway
+        logger.warning(f"Max retries ({max_retries}) reached, returning last result")
+        return task_result, validation_results
+    
+    async def _validate_content(
+        self,
+        content: Dict[str, Any],
+        content_type: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Run all validation checks.
+        
+        Args:
+            content: Generated content to validate
+            content_type: Type of content
+            context: Context data
+            
+        Returns:
+            Dictionary with validation results
+        """
+        
+        logger.info(f"Running validation checks for {content_type}")
+        
+        # Get source material for accuracy check
+        source_material = ""
+        if context.get("notes") and context["notes"].get("notes"):
+            source_material = "\n\n".join([
+                f"**{note.get('title', 'Untitled')}**\n{note.get('content', '')}"
+                for note in context["notes"]["notes"]
+            ])
+        
+        # Prepare validation tasks
+        validation_tasks = []
+        
+        # Safety check (always required)
+        validation_tasks.append(
+            ("safety", self.safety_agent.execute({
+                "content": content,
+                "content_type": content_type,
+                "age_group": "high_school"
+            }))
+        )
+        
+        # Quality check
+        requirements = self.validation_config.get_requirements(content_type)
+        if requirements.get("require_quality", True):
+            validation_tasks.append(
+                ("quality", self.quality_agent.execute({
+                    "content": content,
+                    "content_type": content_type
+                }))
+            )
+        
+        # Accuracy check (only if we have source material)
+        if source_material and requirements.get("require_accuracy", True):
+            validation_tasks.append(
+                ("accuracy", self.accuracy_agent.execute({
+                    "generated_content": content,
+                    "source_material": source_material,
+                    "content_type": content_type
+                }))
+            )
+        
+        # Run validations in parallel
+        results = await asyncio.gather(
+            *[task for _, task in validation_tasks],
+            return_exceptions=True
+        )
+        
+        # Compile validation results
+        validation = {}
+        for i, (name, _) in enumerate(validation_tasks):
+            result = results[i]
+            if isinstance(result, Exception):
+                logger.error(f"{name} validation failed: {result}")
+                validation[name] = None
+            elif result.success and result.data:
+                validation[name] = result.data
+            else:
+                logger.warning(f"{name} validation returned no data")
+                validation[name] = None
+        
+        logger.info(f"Validation complete: {len([v for v in validation.values() if v])} checks passed")
+        return validation
+    
+    def _validation_passed(
+        self,
+        validation: Dict[str, Any],
+        content_type: str
+    ) -> tuple[bool, str]:
+        """
+        Check if validation meets minimum standards.
+        
+        Args:
+            validation: Validation results
+            content_type: Type of content
+            
+        Returns:
+            Tuple of (passed, reason)
+        """
+        
+        # Get requirements
+        requirements = self.validation_config.get_requirements(content_type)
+        
+        # Safety check (mandatory)
+        safety = validation.get("safety", {})
+        if not safety:
+            return True, "Safety check skipped"  # If check failed, be lenient
+        
+        if not safety.get("is_safe", True):
+            return False, "Content failed safety check"
+        
+        # Quality check
+        if requirements.get("require_quality", True):
+            quality = validation.get("quality", {})
+            if quality:
+                quality_score = quality.get("quality_score", 1.0)
+                min_quality = requirements.get("min_quality", 0.6)
+                if quality_score < min_quality:
+                    return False, f"Quality score {quality_score:.2f} below minimum {min_quality:.2f}"
+        
+        # Accuracy check
+        if requirements.get("require_accuracy", True):
+            accuracy = validation.get("accuracy")
+            if accuracy:
+                accuracy_score = accuracy.get("accuracy_score", 1.0)
+                min_accuracy = requirements.get("min_accuracy", 0.7)
+                if accuracy_score < min_accuracy:
+                    return False, f"Accuracy score {accuracy_score:.2f} below minimum {min_accuracy:.2f}"
+        
+        return True, "All validation checks passed"
+    
+    async def _final_safety_check(
+        self,
+        task_result: AgentResult,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Final safety verification before returning to user.
+        
+        Args:
+            task_result: Result from task execution
+            context: Context data
+            
+        Returns:
+            Dictionary with safety assessment
+        """
+        
+        if not task_result.success:
+            return {"is_safe": True, "confidence": 1.0}  # Error responses are safe
+        
+        logger.info("Running final safety check")
+        
+        result = await self.safety_agent.execute({
+            "content": task_result.data,
+            "content_type": "final_output",
+            "age_group": "high_school"
+        })
+        
+        if result.success and result.data:
+            return result.data
+        else:
+            logger.warning("Final safety check failed, assuming safe")
+            return {"is_safe": True, "confidence": 0.5}

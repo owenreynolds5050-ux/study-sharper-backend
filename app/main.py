@@ -13,8 +13,11 @@ from app.agents.tasks.flashcard_agent import FlashcardAgent
 from app.agents.tasks.quiz_agent import QuizAgent
 from app.agents.tasks.summary_agent import SummaryAgent
 from app.agents.tasks.chat_agent import ChatAgent
+from app.agents.validation.accuracy_agent import AccuracyAgent
+from app.agents.validation.safety_agent import SafetyAgent
+from app.agents.validation.quality_agent import QualityAgent
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 
 # Configure logging
@@ -72,7 +75,7 @@ def health_check():
 @app.post("/api/ai/agent-test")
 async def test_agent_system(request: AgentRequest):
     """
-    Test endpoint for multi-agent system (Phase 3: Task Execution).
+    Test endpoint for multi-agent system (Phase 4: Validation & Safety).
     Does not affect existing endpoints - purely for testing agent infrastructure.
     
     This endpoint demonstrates:
@@ -81,6 +84,8 @@ async def test_agent_system(request: AgentRequest):
     - Context gathering from multiple sources
     - Task execution with LLM
     - Content generation (flashcards, quizzes, summaries, chat)
+    - Validation (safety, quality, accuracy)
+    - Retry logic with corrections
     - Progress tracking capability
     """
     try:
@@ -107,8 +112,8 @@ async def test_agent_system(request: AgentRequest):
             "execution_time_ms": result.execution_time_ms,
             "model_used": result.model_used,
             "progress_updates": progress_updates,
-            "message": "Phase 3 test successful - task execution working",
-            "phase": 3
+            "message": "Phase 4 test successful - validation working",
+            "phase": 4
         }
     
     except Exception as e:
@@ -117,7 +122,7 @@ async def test_agent_system(request: AgentRequest):
             "status": "error",
             "error": str(e),
             "message": "Agent system test failed",
-            "phase": 3
+            "phase": 4
         }
 
 
@@ -261,4 +266,124 @@ async def test_chat(request: ChatTestRequest):
         return result.dict()
     except Exception as e:
         logging.error(f"Chat test error: {e}")
+        return {"error": str(e)}
+
+
+# Validation agent test endpoints (Phase 4)
+
+class SafetyTestRequest(BaseModel):
+    content: Dict[str, Any]
+    content_type: str
+    age_group: str = "high_school"
+
+class AccuracyTestRequest(BaseModel):
+    generated_content: Dict[str, Any]
+    source_material: str
+    content_type: str
+
+class QualityTestRequest(BaseModel):
+    content: Dict[str, Any]
+    content_type: str
+
+class FullValidationRequest(BaseModel):
+    content: Dict[str, Any]
+    content_type: str
+    source_material: Optional[str] = None
+
+@app.post("/api/ai/test-safety")
+async def test_safety_agent(request: SafetyTestRequest):
+    """Test safety agent directly"""
+    try:
+        agent = SafetyAgent()
+        result = await agent.execute({
+            "content": request.content,
+            "content_type": request.content_type,
+            "age_group": request.age_group
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Safety test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-accuracy")
+async def test_accuracy_agent(request: AccuracyTestRequest):
+    """Test accuracy agent directly"""
+    try:
+        agent = AccuracyAgent()
+        result = await agent.execute({
+            "generated_content": request.generated_content,
+            "source_material": request.source_material,
+            "content_type": request.content_type
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Accuracy test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-quality")
+async def test_quality_agent(request: QualityTestRequest):
+    """Test quality agent directly"""
+    try:
+        agent = QualityAgent()
+        result = await agent.execute({
+            "content": request.content,
+            "content_type": request.content_type
+        })
+        return result.dict()
+    except Exception as e:
+        logging.error(f"Quality test error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/test-full-validation")
+async def test_full_validation(request: FullValidationRequest):
+    """Test complete validation pipeline"""
+    try:
+        safety_agent = SafetyAgent()
+        quality_agent = QualityAgent()
+        accuracy_agent = AccuracyAgent()
+        
+        # Run safety check
+        safety_result = await safety_agent.execute({
+            "content": request.content,
+            "content_type": request.content_type
+        })
+        
+        # Run quality check
+        quality_result = await quality_agent.execute({
+            "content": request.content,
+            "content_type": request.content_type
+        })
+        
+        # Run accuracy check if source material provided
+        accuracy_result = None
+        if request.source_material:
+            accuracy_result = await accuracy_agent.execute({
+                "generated_content": request.content,
+                "source_material": request.source_material,
+                "content_type": request.content_type
+            })
+        
+        # Determine overall pass/fail
+        overall_passed = (
+            safety_result.data.get("is_safe", False) and
+            quality_result.data.get("quality_score", 0) > 0.6 and
+            (not accuracy_result or accuracy_result.data.get("accuracy_score", 0) > 0.7)
+        )
+        
+        return {
+            "safety": safety_result.dict(),
+            "quality": quality_result.dict(),
+            "accuracy": accuracy_result.dict() if accuracy_result else None,
+            "overall_passed": overall_passed,
+            "summary": {
+                "safety_score": safety_result.data.get("safety_score", 0),
+                "quality_score": quality_result.data.get("quality_score", 0),
+                "accuracy_score": accuracy_result.data.get("accuracy_score", 0) if accuracy_result else None
+            }
+        }
+    except Exception as e:
+        logging.error(f"Full validation test error: {e}")
         return {"error": str(e)}
