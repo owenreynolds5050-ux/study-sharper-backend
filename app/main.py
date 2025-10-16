@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from app.api import notes, chat, upload, embeddings, folders, flashcards, ai_chat, flashcards_chat, flashcard_chatbot
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
@@ -16,9 +17,19 @@ from app.agents.tasks.chat_agent import ChatAgent
 from app.agents.validation.accuracy_agent import AccuracyAgent
 from app.agents.validation.safety_agent import SafetyAgent
 from app.agents.validation.quality_agent import QualityAgent
+from app.agents.sse import sse_manager
+from app.agents.content_saver import ContentSaver
+from app.core.database import supabase
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+import uuid
+import asyncio
+import json
 import logging
+
+# Initialize content saver
+content_saver = ContentSaver(supabase)
 
 # Configure logging
 logging.basicConfig(
@@ -387,3 +398,254 @@ async def test_full_validation(request: FullValidationRequest):
     except Exception as e:
         logging.error(f"Full validation test error: {e}")
         return {"error": str(e)}
+
+
+# SSE Streaming endpoints (Phase 5)
+
+@app.get("/api/ai/stream/{session_id}")
+async def stream_progress(session_id: str, request: Request):
+    """
+    SSE endpoint for real-time progress updates.
+    
+    Connect to this endpoint to receive real-time updates for a processing session.
+    Events are sent in Server-Sent Events format.
+    """
+    logging.info(f"SSE stream connection requested for session: {session_id}")
+    
+    return StreamingResponse(
+        sse_manager.event_generator(session_id, request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
+
+@app.post("/api/ai/process-stream")
+async def process_with_streaming(request: AgentRequest):
+    """
+    Process AI request with real-time streaming updates.
+    
+    This endpoint:
+    1. Starts processing immediately
+    2. Returns a session_id and stream URL
+    3. Sends progress updates via SSE
+    4. Sends final result when complete
+    
+    Connect to the returned stream_url to receive updates.
+    """
+    
+    # Generate session ID if not provided
+    if not request.session_id:
+        request.session_id = str(uuid.uuid4())
+    
+    logging.info(f"Stream processing started for session: {request.session_id}")
+    
+    # Define background execution task
+    async def execute_and_stream():
+        try:
+            # Send start event
+            await sse_manager.send_update(
+                request.session_id,
+                {
+                    "type": "start",
+                    "timestamp": datetime.now().isoformat(),
+                    "session_id": request.session_id
+                }
+            )
+            
+            # Create orchestrator
+            orchestrator = MainOrchestrator()
+            
+            # Add progress callback that sends SSE updates
+            async def progress_callback(progress):
+                await sse_manager.send_update(
+                    request.session_id,
+                    {
+                        "type": "progress",
+                        "data": progress.dict()
+                    }
+                )
+            
+            orchestrator.add_progress_callback(progress_callback)
+            
+            # Execute orchestrator
+            result = await orchestrator.execute(input_data=request.dict())
+            
+            # Save generated content if successful
+            save_result = None
+            if result.success and request.user_id:
+                try:
+                    save_result = await content_saver.save_generated_content(
+                        request.user_id,
+                        request.type,
+                        result.data
+                    )
+                    logging.info(f"Content saved: {save_result}")
+                except Exception as save_error:
+                    logging.error(f"Failed to save content: {save_error}")
+            
+            # Send result
+            await sse_manager.send_update(
+                request.session_id,
+                {
+                    "type": "complete",
+                    "data": result.data if result.success else {"error": result.error},
+                    "success": result.success,
+                    "execution_time_ms": result.execution_time_ms,
+                    "validation": result.data.get("validation") if result.success else None,
+                    "saved": save_result
+                }
+            )
+            
+            logging.info(f"Stream processing completed for session: {request.session_id}")
+        
+        except Exception as e:
+            logging.error(f"Stream processing error for session {request.session_id}: {e}")
+            await sse_manager.send_update(
+                request.session_id,
+                {
+                    "type": "error",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+        
+        finally:
+            # Signal completion
+            await sse_manager.close_connection(request.session_id)
+    
+    # Start execution in background
+    asyncio.create_task(execute_and_stream())
+    
+    return {
+        "status": "processing",
+        "session_id": request.session_id,
+        "stream_url": f"/api/ai/stream/{request.session_id}",
+        "message": "Processing started. Connect to stream_url for real-time updates."
+    }
+
+
+@app.get("/api/ai/stream-status")
+async def get_stream_status():
+    """Get status of SSE streaming system"""
+    return {
+        "active_connections": sse_manager.get_active_connections(),
+        "status": "operational"
+    }
+
+
+# Content retrieval and feedback endpoints (Phase 5)
+
+class FeedbackRequest(BaseModel):
+    content_type: str
+    content_id: str
+    rating: int
+    feedback_text: Optional[str] = None
+    issues: Optional[List[str]] = None
+
+@app.post("/api/ai/feedback")
+async def submit_feedback(feedback: FeedbackRequest, user_id: str):
+    """
+    Collect user feedback on generated content.
+    
+    Args:
+        feedback: Feedback data
+        user_id: User ID (from auth)
+        
+    Returns:
+        Success status
+    """
+    try:
+        supabase.table("content_feedback").insert({
+            "user_id": user_id,
+            "content_type": feedback.content_type,
+            "content_id": feedback.content_id,
+            "rating": feedback.rating,
+            "feedback_text": feedback.feedback_text,
+            "issues": json.dumps(feedback.issues or []),
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        
+        logging.info(f"Feedback recorded: {feedback.content_type} - {feedback.rating}/5")
+        return {
+            "status": "success",
+            "message": "Feedback recorded"
+        }
+    
+    except Exception as e:
+        logging.error(f"Failed to record feedback: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/api/ai/generated-content/{content_type}")
+async def get_generated_content(
+    content_type: str,
+    user_id: str,
+    limit: int = 20
+):
+    """
+    Retrieve user's generated content.
+    
+    Args:
+        content_type: Type of content (flashcards, quizzes, exams, summaries)
+        user_id: User ID (from auth)
+        limit: Maximum number of items
+        
+    Returns:
+        List of generated content items
+    """
+    try:
+        items = await content_saver.get_user_content(user_id, content_type, limit)
+        
+        return {
+            "status": "success",
+            "content_type": content_type,
+            "items": items,
+            "count": len(items)
+        }
+    
+    except Exception as e:
+        logging.error(f"Failed to get generated content: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/api/ai/content-stats/{user_id}")
+async def get_content_stats(user_id: str):
+    """
+    Get statistics about user's generated content.
+    
+    Args:
+        user_id: User ID
+        
+    Returns:
+        Content statistics
+    """
+    try:
+        stats = {}
+        
+        # Count each content type
+        for content_type in ["flashcards", "quizzes", "exams", "summaries"]:
+            items = await content_saver.get_user_content(user_id, content_type, limit=1000)
+            stats[content_type] = len(items)
+        
+        return {
+            "status": "success",
+            "stats": stats,
+            "total_items": sum(stats.values())
+        }
+    
+    except Exception as e:
+        logging.error(f"Failed to get content stats: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
