@@ -58,7 +58,7 @@ class BaseAgent(ABC):
     ) -> AgentResult:
         """
         Execute agent and return standardized result.
-        Handles timing, error catching, and result formatting.
+        Handles timing, error catching, result formatting, and monitoring.
         
         Args:
             input_data: Input data for the agent
@@ -68,26 +68,74 @@ class BaseAgent(ABC):
             AgentResult with success status, data, and metadata
         """
         start_time = time.time()
+        request_id = input_data.get("request_id", "unknown")
+        user_id = input_data.get("user_id")
+        session_id = input_data.get("session_id")
         
         try:
             result_data = await self._execute_internal(input_data, context)
             execution_time = int((time.time() - start_time) * 1000)
             
-            return AgentResult(
+            result = AgentResult(
                 success=True,
                 data=result_data,
                 execution_time_ms=execution_time,
-                model_used=self.model
+                model_used=self.model,
+                tokens_used=result_data.get("tokens_used", 0) if isinstance(result_data, dict) else 0
             )
+            
+            # Log execution if monitor available
+            if hasattr(self, 'monitor') and self.monitor and user_id:
+                try:
+                    await self.monitor.log_execution(
+                        user_id=user_id,
+                        session_id=session_id,
+                        request_id=request_id,
+                        agent_name=self.name,
+                        input_data=input_data,
+                        output_data=result_data if isinstance(result_data, dict) else {},
+                        execution_time_ms=execution_time,
+                        tokens_used=result.tokens_used,
+                        model_used=self.model,
+                        status="success"
+                    )
+                except Exception as log_error:
+                    # Don't fail execution if logging fails
+                    pass
+            
+            return result
         
         except Exception as e:
             execution_time = int((time.time() - start_time) * 1000)
-            return AgentResult(
+            
+            result = AgentResult(
                 success=False,
                 error=str(e),
                 execution_time_ms=execution_time,
                 model_used=self.model
             )
+            
+            # Log failure if monitor available
+            if hasattr(self, 'monitor') and self.monitor and user_id:
+                try:
+                    await self.monitor.log_execution(
+                        user_id=user_id,
+                        session_id=session_id,
+                        request_id=request_id,
+                        agent_name=self.name,
+                        input_data=input_data,
+                        output_data={},
+                        execution_time_ms=execution_time,
+                        tokens_used=0,
+                        model_used=self.model,
+                        status="failure",
+                        error_message=str(e)
+                    )
+                except Exception as log_error:
+                    # Don't fail execution if logging fails
+                    pass
+            
+            return result
     
     @abstractmethod
     async def _execute_internal(

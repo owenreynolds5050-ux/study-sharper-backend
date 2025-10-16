@@ -20,9 +20,12 @@ from .validation.accuracy_agent import AccuracyAgent
 from .validation.safety_agent import SafetyAgent
 from .validation.quality_agent import QualityAgent
 from .validation.config import ValidationConfig
+from .monitoring import AgentMonitor
+from app.core.database import supabase
 import asyncio
 import logging
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class MainOrchestrator(BaseAgent):
             description="Routes requests and coordinates subagents"
         )
         self.progress_callbacks: List[Callable] = []
+        self.monitor = AgentMonitor(supabase)
         
         # Initialize context agents (Phase 2)
         self.rag_agent = RAGAgent()

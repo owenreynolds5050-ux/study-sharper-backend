@@ -1,6 +1,9 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from app.api import notes, chat, upload, embeddings, folders, flashcards, ai_chat, flashcards_chat, flashcard_chatbot
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
@@ -19,6 +22,7 @@ from app.agents.validation.safety_agent import SafetyAgent
 from app.agents.validation.quality_agent import QualityAgent
 from app.agents.sse import sse_manager
 from app.agents.content_saver import ContentSaver
+from app.agents.monitoring import AgentMonitor
 from app.core.database import supabase
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -27,9 +31,14 @@ import uuid
 import asyncio
 import json
 import logging
+import os
 
-# Initialize content saver
+# Initialize services
 content_saver = ContentSaver(supabase)
+agent_monitor = AgentMonitor(supabase)
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +50,10 @@ logging.basicConfig(
 run_startup_checks()
 
 app = FastAPI(title="StudySharper API", version="1.0.0")
+
+# Add rate limiter to app state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Configure CORS
 app.add_middleware(
@@ -66,21 +79,52 @@ def read_root():
     return {"message": "StudySharper API", "version": "1.0.0", "status": "healthy"}
 
 @app.get("/health")
-def health_check():
-    """Comprehensive health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "studysharper_backend",
-        "version": "1.0.0",
-        "endpoints": {
-            "folders": "/api/folders",
-            "notes": "/api/notes",
-            "ai_chat": "/api/ai/chat",
-            "flashcards": "/api/flashcards",
-            "flashcard_chatbot": "/api/flashcards/chatbot",
-            "agent_test": "/api/ai/agent-test"
+async def health_check():
+    """
+    Comprehensive health check endpoint for monitoring and load balancers.
+    Returns system status, version, and component health.
+    """
+    try:
+        # Test database connection
+        db_healthy = True
+        try:
+            supabase.table("flashcards").select("id").limit(1).execute()
+        except:
+            db_healthy = False
+        
+        # Check if monitoring is working
+        monitoring_healthy = agent_monitor is not None
+        
+        # Overall status
+        overall_status = "healthy" if db_healthy else "degraded"
+        
+        return {
+            "status": overall_status,
+            "service": "studysharper_backend",
+            "version": "1.0.0",
+            "environment": os.getenv("ENVIRONMENT", "development"),
+            "timestamp": datetime.now().isoformat(),
+            "components": {
+                "database": "healthy" if db_healthy else "unhealthy",
+                "monitoring": "healthy" if monitoring_healthy else "disabled",
+                "rate_limiting": "enabled",
+                "sse_streaming": "enabled"
+            },
+            "endpoints": {
+                "ai_streaming": "/api/ai/process-stream",
+                "ai_stream": "/api/ai/stream/{session_id}",
+                "generated_content": "/api/ai/generated-content/{type}",
+                "admin_metrics": "/api/admin/metrics",
+                "notes": "/api/notes",
+                "flashcards": "/api/flashcards"
+            }
         }
-    }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 @app.post("/api/ai/agent-test")
@@ -424,7 +468,8 @@ async def stream_progress(session_id: str, request: Request):
 
 
 @app.post("/api/ai/process-stream")
-async def process_with_streaming(request: AgentRequest):
+@limiter.limit("10/minute")
+async def process_with_streaming(request: Request, ai_request: AgentRequest):
     """
     Process AI request with real-time streaming updates.
     
@@ -438,21 +483,21 @@ async def process_with_streaming(request: AgentRequest):
     """
     
     # Generate session ID if not provided
-    if not request.session_id:
-        request.session_id = str(uuid.uuid4())
+    if not ai_request.session_id:
+        ai_request.session_id = str(uuid.uuid4())
     
-    logging.info(f"Stream processing started for session: {request.session_id}")
+    logging.info(f"Stream processing started for session: {ai_request.session_id}")
     
     # Define background execution task
     async def execute_and_stream():
         try:
             # Send start event
             await sse_manager.send_update(
-                request.session_id,
+                ai_request.session_id,
                 {
                     "type": "start",
                     "timestamp": datetime.now().isoformat(),
-                    "session_id": request.session_id
+                    "session_id": ai_request.session_id
                 }
             )
             
@@ -462,7 +507,7 @@ async def process_with_streaming(request: AgentRequest):
             # Add progress callback that sends SSE updates
             async def progress_callback(progress):
                 await sse_manager.send_update(
-                    request.session_id,
+                    ai_request.session_id,
                     {
                         "type": "progress",
                         "data": progress.dict()
@@ -471,16 +516,18 @@ async def process_with_streaming(request: AgentRequest):
             
             orchestrator.add_progress_callback(progress_callback)
             
-            # Execute orchestrator
-            result = await orchestrator.execute(input_data=request.dict())
+            # Execute orchestrator with request_id for monitoring
+            input_data = ai_request.dict()
+            input_data["request_id"] = str(uuid.uuid4())
+            result = await orchestrator.execute(input_data=input_data)
             
             # Save generated content if successful
             save_result = None
-            if result.success and request.user_id:
+            if result.success and ai_request.user_id:
                 try:
                     save_result = await content_saver.save_generated_content(
-                        request.user_id,
-                        request.type,
+                        ai_request.user_id,
+                        ai_request.type,
                         result.data
                     )
                     logging.info(f"Content saved: {save_result}")
@@ -489,7 +536,7 @@ async def process_with_streaming(request: AgentRequest):
             
             # Send result
             await sse_manager.send_update(
-                request.session_id,
+                ai_request.session_id,
                 {
                     "type": "complete",
                     "data": result.data if result.success else {"error": result.error},
@@ -500,12 +547,12 @@ async def process_with_streaming(request: AgentRequest):
                 }
             )
             
-            logging.info(f"Stream processing completed for session: {request.session_id}")
+            logging.info(f"Stream processing completed for session: {ai_request.session_id}")
         
         except Exception as e:
-            logging.error(f"Stream processing error for session {request.session_id}: {e}")
+            logging.error(f"Stream processing error for session {ai_request.session_id}: {e}")
             await sse_manager.send_update(
-                request.session_id,
+                ai_request.session_id,
                 {
                     "type": "error",
                     "error": str(e),
@@ -515,15 +562,15 @@ async def process_with_streaming(request: AgentRequest):
         
         finally:
             # Signal completion
-            await sse_manager.close_connection(request.session_id)
+            await sse_manager.close_connection(ai_request.session_id)
     
     # Start execution in background
     asyncio.create_task(execute_and_stream())
     
     return {
         "status": "processing",
-        "session_id": request.session_id,
-        "stream_url": f"/api/ai/stream/{request.session_id}",
+        "session_id": ai_request.session_id,
+        "stream_url": f"/api/ai/stream/{ai_request.session_id}",
         "message": "Processing started. Connect to stream_url for real-time updates."
     }
 
@@ -584,7 +631,9 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: str):
 
 
 @app.get("/api/ai/generated-content/{content_type}")
+@limiter.limit("30/minute")
 async def get_generated_content(
+    request: Request,
     content_type: str,
     user_id: str,
     limit: int = 20
@@ -645,6 +694,104 @@ async def get_content_stats(user_id: str):
     
     except Exception as e:
         logging.error(f"Failed to get content stats: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+# Monitoring and Admin endpoints (Phase 6)
+
+@app.get("/api/admin/metrics")
+async def get_system_metrics(hours: int = 24, admin_token: Optional[str] = None):
+    """
+    Get system performance metrics.
+    
+    Args:
+        hours: Time window in hours (default: 24)
+        admin_token: Admin authentication token
+        
+    Returns:
+        Performance metrics
+    """
+    # Verify admin authentication
+    expected_token = os.getenv("ADMIN_TOKEN")
+    if not expected_token or admin_token != expected_token:
+        return {"error": "Unauthorized", "status": 403}
+    
+    try:
+        metrics = await agent_monitor.get_performance_metrics(hours)
+        return {
+            "status": "success",
+            "metrics": metrics
+        }
+    except Exception as e:
+        logging.error(f"Failed to get metrics: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/api/admin/errors")
+async def get_recent_errors(limit: int = 10, admin_token: Optional[str] = None):
+    """
+    Get recent error logs.
+    
+    Args:
+        limit: Maximum number of errors to return
+        admin_token: Admin authentication token
+        
+    Returns:
+        Recent error logs
+    """
+    # Verify admin authentication
+    expected_token = os.getenv("ADMIN_TOKEN")
+    if not expected_token or admin_token != expected_token:
+        return {"error": "Unauthorized", "status": 403}
+    
+    try:
+        errors = await agent_monitor.get_recent_errors(limit)
+        return {
+            "status": "success",
+            "errors": errors,
+            "count": len(errors)
+        }
+    except Exception as e:
+        logging.error(f"Failed to get errors: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/api/admin/user-activity/{user_id}")
+async def get_user_activity(user_id: str, limit: int = 20, admin_token: Optional[str] = None):
+    """
+    Get user's recent agent activity.
+    
+    Args:
+        user_id: User ID
+        limit: Maximum number of records
+        admin_token: Admin authentication token
+        
+    Returns:
+        User's recent activity
+    """
+    # Verify admin authentication
+    expected_token = os.getenv("ADMIN_TOKEN")
+    if not expected_token or admin_token != expected_token:
+        return {"error": "Unauthorized", "status": 403}
+    
+    try:
+        activity = await agent_monitor.get_user_activity(user_id, limit)
+        return {
+            "status": "success",
+            "activity": activity,
+            "count": len(activity)
+        }
+    except Exception as e:
+        logging.error(f"Failed to get user activity: {e}")
         return {
             "status": "error",
             "error": str(e)
