@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from app.core.auth import get_current_user, get_supabase_client
@@ -108,20 +108,46 @@ class UpdateNote(BaseModel):
 
 @router.get("/notes", response_model=List[NoteLightweight])
 def get_notes(
+    response: Response,
+    limit: int = 100,
+    offset: int = 0,
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
     """
-    Get lightweight note list for a user.
+    Get lightweight note list for a user with pagination.
     Returns only essential fields (id, title, folder_id, tags, timestamps).
     Optimized for fast loading with 1000+ notes.
+    Cached for 30 seconds to reduce database load.
+    
+    Args:
+        limit: Maximum number of notes to return (default: 100, max: 200)
+        offset: Number of notes to skip (for pagination)
     """
     try:
+        # Enforce max limit
+        limit = min(limit, 200)
+        
+        # Add cache headers (30 second cache)
+        response.headers["Cache-Control"] = "private, max-age=30"
+        
+        # Get total count for pagination
+        count_response = supabase.table("notes").select(
+            "id", count="exact"
+        ).eq("user_id", user_id).execute()
+        total_count = count_response.count if hasattr(count_response, 'count') else 0
+        
         # Select only lightweight fields - excludes content, extracted_text, summary, transcription
-        response = supabase.table("notes").select(
+        db_response = supabase.table("notes").select(
             "id, user_id, title, tags, folder_id, file_path, created_at, updated_at"
-        ).eq("user_id", user_id).order("updated_at", desc=True).execute()
-        return response.data
+        ).eq("user_id", user_id).order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
+        
+        # Add pagination headers
+        response.headers["X-Total-Count"] = str(total_count)
+        response.headers["X-Limit"] = str(limit)
+        response.headers["X-Offset"] = str(offset)
+        
+        return db_response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

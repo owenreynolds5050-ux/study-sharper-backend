@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException, BackgroundTasks
 from app.core.auth import get_current_user, get_supabase_client
 from app.services.text_extraction import extract_pdf_text, extract_docx_text
 import uuid
@@ -8,8 +8,28 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
+async def process_file_extraction(note_id: str, file_content: bytes, content_type: str, user_id: str, supabase):
+    """Background task to extract text from uploaded file"""
+    try:
+        extracted_text = None
+        if content_type == "application/pdf":
+            extracted_text = extract_pdf_text(file_content)
+        elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            extracted_text = extract_docx_text(file_content)
+        
+        if extracted_text:
+            # Update note with extracted text
+            supabase.table("notes").update({
+                "extracted_text": extracted_text,
+                "content": extracted_text
+            }).eq("id", note_id).eq("user_id", user_id).execute()
+            logger.info(f"Extracted text for note {note_id}")
+    except Exception as e:
+        logger.error(f"Failed to extract text for note {note_id}: {e}")
+
 @router.post("/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(None),
     skip_ai: bool = Form(False),
@@ -27,17 +47,11 @@ async def upload_file(
     # Read file content
     buffer = await file.read()
 
-    # Extract text
-    extracted_text = None
-    # Accept both skip_ai (snake_case) and skipAI (camelCase from frontend)
+    # Check if we should skip AI processing
     should_skip_ai = skip_ai or (skipAI and skipAI.lower() == 'true')
-    if not should_skip_ai:
-        if file.content_type == "application/pdf":
-            extracted_text = extract_pdf_text(buffer)
-        elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            extracted_text = extract_docx_text(buffer)
-
-    note_content = extracted_text if extracted_text else "File uploaded successfully."
+    
+    # Initial note content (will be updated by background task if processing)
+    note_content = "Processing..." if not should_skip_ai else "File uploaded successfully."
 
     # Ensure profile exists for this user (needed due to foreign key constraint)
     try:
@@ -63,14 +77,14 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Save to database
+    # Save to database with initial content
     new_note = {
         "id": note_id,
         "user_id": user_id,
         "title": title if title else file.filename,
         "content": note_content,
         "file_path": file_path,
-        "extracted_text": extracted_text,
+        "extracted_text": None,  # Will be updated by background task
         "file_size": len(buffer),
         "folder_id": folder_id,
     }
@@ -81,5 +95,24 @@ async def upload_file(
         # Clean up storage if db insert fails
         supabase.storage.from_("notes-pdfs").remove([file_path])
         raise HTTPException(status_code=500, detail=str(e))
+    
+    # Queue background task for text extraction (non-blocking)
+    if not should_skip_ai and file.content_type in [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ]:
+        background_tasks.add_task(
+            process_file_extraction,
+            note_id,
+            buffer,
+            file.content_type,
+            user_id,
+            supabase
+        )
+        logger.info(f"Queued text extraction for note {note_id}")
 
-    return {"success": True, "note": response.data[0]}
+    return {
+        "success": True,
+        "note": response.data[0],
+        "processing": not should_skip_ai  # Indicates if background processing is happening
+    }

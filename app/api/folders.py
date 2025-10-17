@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from app.core.auth import get_current_user, get_supabase_client
@@ -27,15 +27,20 @@ class Folder(BaseModel):
 
 @router.get("/folders", response_model=List[Folder])
 async def get_folders(
+    http_response: Response,
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
     """
     Get all folders for the authenticated user.
     Returns folders ordered by creation date.
+    Cached for 60 seconds (folders change infrequently).
     """
     try:
         logger.info(f"Fetching folders for user: {user_id}")
+        
+        # Add cache headers (60 second cache - folders change infrequently)
+        http_response.headers["Cache-Control"] = "private, max-age=60"
         
         response = supabase.table("note_folders")\
             .select("*")\
