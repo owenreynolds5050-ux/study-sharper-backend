@@ -3,11 +3,15 @@ services:
     name: study-sharper-backend
     env: python
     region: oregon
+    plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120 --max-requests 1000 --max-requests-jitter 50 --worker-tmp-dir /dev/shm
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11
+      - key: WEB_CONCURRENCY
+        value: 2
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
