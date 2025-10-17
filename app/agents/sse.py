@@ -7,22 +7,24 @@ from fastapi import Request
 from typing import AsyncGenerator, Dict, Any
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class SSEManager:
-    """Manages Server-Sent Events for real-time updates"""
+    """Manages Server-Sent Events for real-time updates with bounded queues"""
     
-    def __init__(self):
-        self.connections: Dict[str, asyncio.Queue] = {}
-        logger.info("SSE Manager initialized")
+    def __init__(self, max_queue_size: int = 100, connection_timeout_minutes: int = 10):
+        self.connections: Dict[str, Dict[str, Any]] = {}
+        self.max_queue_size = max_queue_size
+        self.connection_timeout_minutes = connection_timeout_minutes
+        logger.info(f"SSE Manager initialized (max_queue_size={max_queue_size}, timeout={connection_timeout_minutes}min)")
     
     async def create_connection(self, session_id: str) -> asyncio.Queue:
         """
-        Create new SSE connection.
+        Create new SSE connection with bounded queue.
         
         Args:
             session_id: Unique session identifier
@@ -30,14 +32,18 @@ class SSEManager:
         Returns:
             Queue for sending updates
         """
-        queue = asyncio.Queue()
-        self.connections[session_id] = queue
+        queue = asyncio.Queue(maxsize=self.max_queue_size)  # BOUNDED
+        self.connections[session_id] = {
+            "queue": queue,
+            "created_at": datetime.now(),
+            "last_activity": datetime.now()
+        }
         logger.info(f"SSE connection created for session: {session_id}")
         return queue
     
     async def send_update(self, session_id: str, data: Dict[str, Any]):
         """
-        Send update to specific session.
+        Send update to specific session with queue overflow handling.
         
         Args:
             session_id: Session to send update to
@@ -45,8 +51,19 @@ class SSEManager:
         """
         if session_id in self.connections:
             try:
-                await self.connections[session_id].put(data)
+                # Try to add to queue
+                self.connections[session_id]["queue"].put_nowait(data)
+                self.connections[session_id]["last_activity"] = datetime.now()
                 logger.debug(f"Update sent to session {session_id}: {data.get('type')}")
+            except asyncio.QueueFull:
+                # Drop oldest, add new
+                try:
+                    self.connections[session_id]["queue"].get_nowait()
+                    self.connections[session_id]["queue"].put_nowait(data)
+                    self.connections[session_id]["last_activity"] = datetime.now()
+                    logger.warning(f"Queue full for {session_id}, dropped oldest message")
+                except Exception as e:
+                    logger.error(f"Failed to handle queue overflow for {session_id}: {e}")
             except Exception as e:
                 logger.error(f"Failed to send update to {session_id}: {e}")
         else:
@@ -54,14 +71,32 @@ class SSEManager:
     
     async def close_connection(self, session_id: str):
         """
-        Close SSE connection.
+        Close SSE connection and drain queue to free memory.
         
         Args:
             session_id: Session to close
         """
         if session_id in self.connections:
             try:
-                await self.connections[session_id].put(None)  # Signal end
+                # Drain queue before closing
+                queue = self.connections[session_id]["queue"]
+                drained = 0
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                        drained += 1
+                    except:
+                        break
+                
+                if drained > 0:
+                    logger.debug(f"Drained {drained} messages from queue for {session_id}")
+                
+                # Signal end
+                try:
+                    await queue.put(None)
+                except asyncio.QueueFull:
+                    pass  # Queue full, but we're closing anyway
+                
                 del self.connections[session_id]
                 logger.info(f"SSE connection closed for session: {session_id}")
             except Exception as e:
@@ -122,25 +157,50 @@ class SSEManager:
         """Get count of active connections"""
         return len(self.connections)
     
-    async def cleanup_stale_connections(self, max_age_seconds: int = 600):
+    async def cleanup_stale_connections(self) -> int:
         """
-        Clean up stale connections older than max_age.
+        Remove connections inactive for > timeout.
         
-        Args:
-            max_age_seconds: Maximum age in seconds before cleanup
+        Returns:
+            Number of connections cleaned up
         """
-        # Note: This is a basic implementation
-        # In production, you'd track connection timestamps
+        now = datetime.now()
+        timeout = timedelta(minutes=self.connection_timeout_minutes)
         stale_sessions = []
         
-        for session_id in list(self.connections.keys()):
-            # Check if queue is empty and hasn't been used
-            if self.connections[session_id].empty():
+        for session_id, conn in self.connections.items():
+            if now - conn["last_activity"] > timeout:
                 stale_sessions.append(session_id)
         
         for session_id in stale_sessions:
             logger.info(f"Cleaning up stale connection: {session_id}")
             await self.close_connection(session_id)
+        
+        return len(stale_sessions)
+    
+    def get_stats(self) -> dict:
+        """
+        Get SSE manager statistics.
+        
+        Returns:
+            Dictionary with connection stats
+        """
+        if not self.connections:
+            return {
+                "active_connections": 0,
+                "oldest_connection_age_seconds": 0
+            }
+        
+        now = datetime.now()
+        oldest_age = max(
+            (now - conn["created_at"]).total_seconds()
+            for conn in self.connections.values()
+        )
+        
+        return {
+            "active_connections": len(self.connections),
+            "oldest_connection_age_seconds": oldest_age
+        }
 
 
 # Global SSE manager instance

@@ -51,6 +51,26 @@ run_startup_checks()
 
 app = FastAPI(title="StudySharper API", version="1.0.0")
 
+
+# Background task for SSE cleanup
+async def start_sse_cleanup():
+    """Background task to cleanup stale SSE connections"""
+    while True:
+        await asyncio.sleep(60)  # Every minute
+        try:
+            cleaned = await sse_manager.cleanup_stale_connections()
+            if cleaned > 0:
+                logging.info(f"Cleaned up {cleaned} stale SSE connections")
+        except Exception as e:
+            logging.error(f"Error in SSE cleanup task: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background tasks on startup"""
+    asyncio.create_task(start_sse_cleanup())
+    logging.info("Background tasks started: SSE cleanup")
+
 # Add rate limiter to app state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
