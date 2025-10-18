@@ -55,6 +55,9 @@ pydantic_core==2.41.1
 Pygments==2.19.2
 PyJWT==2.10.1
 pypdf==6.1.1
+pdfminer.six==20231228
+pdf2image==1.17.0
+pytesseract==0.3.13
 pyreadline3==3.5.4
 pytest==8.4.2
 pytest-asyncio==1.2.0

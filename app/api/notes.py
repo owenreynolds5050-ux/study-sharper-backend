@@ -78,6 +78,11 @@ class NoteLightweight(BaseModel):
     tags: Optional[List[str]] = None
     folder_id: Optional[str] = None
     file_path: Optional[str] = None
+    processing_status: Optional[str] = None
+    extraction_method: Optional[str] = None
+    error_message: Optional[str] = None
+    original_filename: Optional[str] = None
+    ocr_processed: Optional[bool] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -93,7 +98,12 @@ class Note(BaseModel):
     tags: Optional[List[str]] = None
     folder_id: Optional[str] = None
     file_path: Optional[str] = None
-    file_size: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+    processing_status: Optional[str] = None
+    extraction_method: Optional[str] = None
+    error_message: Optional[str] = None
+    original_filename: Optional[str] = None
+    ocr_processed: Optional[bool] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -139,7 +149,7 @@ def get_notes(
         
         # Select only lightweight fields - excludes content, extracted_text, summary, transcription
         db_response = supabase.table("notes").select(
-            "id, user_id, title, tags, folder_id, file_path, created_at, updated_at"
+            "id, user_id, title, tags, folder_id, file_path, processing_status, extraction_method, error_message, original_filename, ocr_processed, created_at, updated_at"
         ).eq("user_id", user_id).order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
         
         # Add pagination headers
