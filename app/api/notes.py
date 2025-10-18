@@ -83,6 +83,7 @@ class NoteLightweight(BaseModel):
     error_message: Optional[str] = None
     original_filename: Optional[str] = None
     ocr_processed: Optional[bool] = None
+    edited_manually: Optional[bool] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -104,6 +105,7 @@ class Note(BaseModel):
     error_message: Optional[str] = None
     original_filename: Optional[str] = None
     ocr_processed: Optional[bool] = None
+    edited_manually: Optional[bool] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -115,6 +117,10 @@ class CreateNote(BaseModel):
 
 class UpdateNote(BaseModel):
     folder_id: Optional[str] = None
+
+class PatchNoteText(BaseModel):
+    """Model for updating extracted_text via PATCH."""
+    extracted_text: str
 
 @router.get("/notes", response_model=List[NoteLightweight])
 def get_notes(
@@ -149,7 +155,7 @@ def get_notes(
         
         # Select only lightweight fields - excludes content, extracted_text, summary, transcription
         db_response = supabase.table("notes").select(
-            "id, user_id, title, tags, folder_id, file_path, processing_status, extraction_method, error_message, original_filename, ocr_processed, created_at, updated_at"
+            "id, user_id, title, tags, folder_id, file_path, processing_status, extraction_method, error_message, original_filename, ocr_processed, edited_manually, created_at, updated_at"
         ).eq("user_id", user_id).order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
         
         # Add pagination headers
@@ -207,6 +213,52 @@ def get_note(
         
         if not response.data or len(response.data) == 0:
             raise HTTPException(status_code=404, detail="Note not found")
+        
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/notes/{note_id}", response_model=Note)
+async def patch_note_text(
+    note_id: str,
+    patch_data: PatchNoteText,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Update the extracted_text of a note (user editing).
+    Sets edited_manually=true and updates updated_at timestamp.
+    Does NOT trigger re-processing.
+    """
+    try:
+        # Validate text is not empty
+        if not patch_data.extracted_text or not patch_data.extracted_text.strip():
+            raise HTTPException(status_code=400, detail="Extracted text cannot be empty")
+        
+        # Validate text size (1MB = 1,048,576 bytes)
+        text_size = len(patch_data.extracted_text.encode('utf-8'))
+        if text_size > 1_048_576:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Text too large ({text_size:,} bytes). Maximum size is 1MB (1,048,576 bytes)"
+            )
+        
+        # Verify user owns this note
+        check_response = supabase.table("notes").select("id").eq("id", note_id).eq("user_id", user_id).execute()
+        if not check_response.data or len(check_response.data) == 0:
+            raise HTTPException(status_code=404, detail="Note not found")
+        
+        # Update extracted_text and set edited_manually=true
+        # updated_at is automatically updated by the database trigger
+        response = supabase.table("notes").update({
+            "extracted_text": patch_data.extracted_text,
+            "edited_manually": True
+        }).eq("id", note_id).eq("user_id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=500, detail="Failed to update note")
         
         return response.data[0]
     except HTTPException:
