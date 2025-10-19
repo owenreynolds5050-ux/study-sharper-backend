@@ -1,10 +1,13 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.api import notes, chat, upload, embeddings, folders, flashcards, ai_chat
+from app.api import notes, chat, embeddings, folders, flashcards, ai_chat
+# Old upload disabled - using new file_upload API
+from app.api.files import router as files_router
+from app.api.file_upload import router as file_upload_router
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
 from app.agents.orchestrator import MainOrchestrator
@@ -24,6 +27,9 @@ from app.agents.sse import sse_manager
 from app.agents.content_saver import ContentSaver
 from app.agents.monitoring import AgentMonitor
 from app.core.database import supabase
+from app.services.job_queue import job_queue
+from app.core.websocket import ws_manager
+from app.core.auth import get_current_user_from_token
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -67,9 +73,47 @@ async def start_sse_cleanup():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize background tasks on startup"""
+    """Initialize services on startup"""
+    job_queue.start_workers()
     asyncio.create_task(start_sse_cleanup())
     logging.info("Background tasks started: SSE cleanup")
+    print("✓ Application startup complete")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    await job_queue.stop_workers()
+    print("✓ Application shutdown complete")
+
+
+@app.websocket("/ws/files")
+async def websocket_endpoint(websocket: WebSocket, token: str):
+    """WebSocket endpoint for real-time file processing updates"""
+    try:
+        # Authenticate user from token
+        user = await get_current_user_from_token(token)
+        user_id = user["id"]
+
+        # Connect
+        await ws_manager.connect(websocket, user_id)
+
+        try:
+            # Keep connection alive
+            while True:
+                # Wait for messages (ping/pong)
+                data = await websocket.receive_text()
+
+                # Echo back as heartbeat
+                if data == "ping":
+                    await websocket.send_text("pong")
+
+        except WebSocketDisconnect:
+            await ws_manager.disconnect(websocket, user_id)
+
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        await websocket.close()
 
 # Add rate limiter to app state
 app.state.limiter = limiter
@@ -86,11 +130,13 @@ app.add_middleware(
 
 app.include_router(notes.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
-app.include_router(upload.router, prefix="/api")
+# app.include_router(upload.router, prefix="/api", tags=["upload"])  # Old upload disabled
 app.include_router(embeddings.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(flashcards.router, prefix="/api")
 app.include_router(ai_chat.router, prefix="/api")
+app.include_router(files_router, prefix="/api", tags=["files"])
+app.include_router(file_upload_router, prefix="/api", tags=["upload"])
 
 @app.get("/")
 def read_root():
@@ -143,6 +189,16 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
+
+
+@app.get("/health/queue")
+async def queue_health():
+    """Get job queue status"""
+    return {
+        "status": "healthy",
+        "queues": job_queue.get_queue_status(),
+        "memory_ok": job_queue.check_memory()
+    }
 
 
 @app.post("/api/ai/agent-test")

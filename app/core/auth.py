@@ -77,3 +77,34 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
     except Exception as e:
         logger.error(f"Authentication failed with unexpected error: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+async def get_current_user_from_token(token: str) -> dict:
+    """
+    Authenticate user from JWT token (for WebSocket connections).
+
+    Args:
+        token: JWT access token
+
+    Returns:
+        User dict with id and email
+
+    Raises:
+        HTTPException if token is invalid
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Verify token with Supabase
+        user_response = supabase.auth.get_user(token)
+
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        return {
+            "id": user_response.user.id,
+            "email": user_response.user.email
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
