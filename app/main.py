@@ -120,25 +120,19 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Configure CORS - MUST be before routers
-# Use specific origins with credentials for security
-# Fallback to common origins if not configured
-cors_origins = ALLOWED_ORIGINS_LIST if ALLOWED_ORIGINS_LIST else [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://study-sharper.vercel.app",
-    "https://study-sharper-git-main.vercel.app"
-]
-logging.info(f"Configuring CORS with origins: {cors_origins}")
+# CRITICAL: Allow all origins temporarily to diagnose CORS issue
+# TODO: Revert to specific origins after confirming it works
+logging.info("Configuring CORS with WILDCARD for debugging")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"],  # TEMPORARY: Allow all origins
+    allow_credentials=False,  # Must be False with wildcard
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=3600,
 )
-logging.info(f"CORS middleware configured with {len(cors_origins)} origins")
+logging.info("CORS middleware configured with wildcard (TEMPORARY FOR DEBUGGING)")
 
 app.include_router(notes.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
