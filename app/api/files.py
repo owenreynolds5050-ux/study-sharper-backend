@@ -1,6 +1,7 @@
 # app/api/files.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List
+import uuid
 from app.core.auth import get_current_user
 from app.core.database import supabase
 from pydantic import BaseModel
@@ -20,6 +21,13 @@ class FolderCreate(BaseModel):
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
+
+
+class FileCreate(BaseModel):
+    title: str
+    content: Optional[str] = None
+    folder_id: Optional[str] = None
+    file_type: Optional[str] = "md"
 
 @router.get("/files")
 async def list_files(
@@ -79,6 +87,62 @@ async def get_file(
     }).eq("id", file_id).execute()
     
     return result.data[0]
+
+
+@router.post("/files")
+async def create_file(
+    file_data: FileCreate,
+    user = Depends(get_current_user)
+):
+    """Create a new manual note/file."""
+    file_type = (file_data.file_type or "md").lower()
+
+    if file_type not in {"md", "txt"}:
+        raise HTTPException(400, "Unsupported file type for manual creation")
+
+    content = file_data.content or ""
+    file_size_bytes = len(content.encode("utf-8"))
+    file_id = str(uuid.uuid4())
+
+    record = {
+        "id": file_id,
+        "user_id": user["id"],
+        "folder_id": file_data.folder_id,
+        "title": file_data.title.strip() or "Untitled",
+        "file_type": file_type,
+        "content": content,
+        "file_size_bytes": file_size_bytes,
+        "processing_status": "completed",
+        "extraction_method": "manual",
+        "has_images": False,
+        "original_filename": f"{(file_data.title.strip() or 'note')}.{file_type}",
+        "edited_manually": True,
+    }
+
+    try:
+        result = supabase.table("files").insert(record).execute()
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to create note: {exc}")
+
+    if not result.data:
+        raise HTTPException(500, "Failed to create note")
+
+    # Update quota / counts
+    from app.services.quota_service import increment_upload_count
+
+    await increment_upload_count(user["id"], file_size_bytes)
+
+    # Trigger embedding generation for contentful notes
+    if content:
+        from app.services.job_queue import job_queue, JobType, JobPriority
+
+        await job_queue.add_job(
+            job_type=JobType.EMBEDDING_GENERATION,
+            job_data={"file_id": file_id, "user_id": user["id"]},
+            priority=JobPriority.NORMAL,
+        )
+
+    return {"file": result.data[0]}
 
 @router.patch("/files/{file_id}")
 async def update_file(
