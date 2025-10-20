@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -57,8 +57,38 @@ run_startup_checks()
 
 app = FastAPI(title="StudySharper API", version="1.0.0")
 
-# Configure CORS FIRST - MUST be before routers
-# This ensures CORS headers are added to all responses, including errors
+# Add OPTIONS preflight handler BEFORE any other middleware
+# This ensures OPTIONS requests bypass authentication and rate limiting
+@app.middleware("http")
+async def cors_preflight_handler(request: Request, call_next):
+    """
+    Handle OPTIONS preflight requests before they reach route handlers.
+    This prevents authentication/rate limiting from blocking CORS preflight.
+    """
+    if request.method == "OPTIONS":
+        response = Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+        return response
+    
+    # For non-OPTIONS requests, proceed normally
+    response = await call_next(request)
+    
+    # Add CORS headers to all responses
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Expose-Headers"] = "*"
+    
+    return response
+
+# Configure CORS middleware (belt and suspenders approach)
 logging.info("Configuring CORS with wildcard for all origins")
 app.add_middleware(
     CORSMiddleware,
