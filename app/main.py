@@ -62,26 +62,40 @@ app = FastAPI(title="StudySharper API", version="1.0.0")
 @app.middleware("http")
 async def cors_preflight_handler(request: Request, call_next):
     """
-    Handle OPTIONS preflight requests before ANYTHING else.
+    Handle OPTIONS preflight requests before they reach route handlers.
     This prevents authentication/rate limiting from blocking CORS preflight.
     """
-    logging.info(f"Request method: {request.method}, Path: {request.url.path}")
+    logging.info(f"CORS Middleware: {request.method} {request.url.path}")
+    
+    # Handle ALL OPTIONS requests immediately - no exceptions
     if request.method == "OPTIONS":
-        logging.info("Handling OPTIONS preflight request")
-        response = Response(
+        logging.info(f"OPTIONS preflight for {request.url.path} - returning 200 with CORS headers")
+        return Response(
             status_code=200,
             headers={
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, User-Agent",
                 "Access-Control-Max-Age": "3600",
+                "Access-Control-Allow-Credentials": "false",
             }
         )
-        logging.info("Returning OPTIONS response with CORS headers")
-        return response
     
     # For non-OPTIONS requests, proceed normally
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        logging.error(f"Error processing request: {e}")
+        # Return error with CORS headers
+        return Response(
+            status_code=500,
+            content=str(e),
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
     
     # Add CORS headers to all responses
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -89,7 +103,7 @@ async def cors_preflight_handler(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Expose-Headers"] = "*"
     
-    logging.info(f"Added CORS headers to response for {request.method} {request.url.path}")
+    logging.info(f"Response for {request.method} {request.url.path}: {response.status_code}")
     return response
 
 # Configure CORS middleware as backup (belt and suspenders approach)
