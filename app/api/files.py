@@ -109,7 +109,8 @@ async def create_file(
         "user_id": user_id,
         "folder_id": file_data.folder_id,
         "title": file_data.title.strip() or "Untitled",
-        "extracted_text": content,  # Use extracted_text, not content
+        "content": content,  # Required by NOT NULL constraint
+        "extracted_text": content,  # Also store in extracted_text for consistency
         "file_size_bytes": file_size_bytes,
         "processing_status": "completed",
         "extraction_method": "manual",
