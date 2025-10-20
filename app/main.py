@@ -57,15 +57,17 @@ run_startup_checks()
 
 app = FastAPI(title="StudySharper API", version="1.0.0")
 
-# Add OPTIONS preflight handler BEFORE any other middleware
-# This ensures OPTIONS requests bypass authentication and rate limiting
+# Add OPTIONS preflight handler as the VERY FIRST middleware
+# This ensures NOTHING runs before it (no auth, no rate limiting)
 @app.middleware("http")
 async def cors_preflight_handler(request: Request, call_next):
     """
-    Handle OPTIONS preflight requests before they reach route handlers.
+    Handle OPTIONS preflight requests before ANYTHING else.
     This prevents authentication/rate limiting from blocking CORS preflight.
     """
+    logging.info(f"Request method: {request.method}, Path: {request.url.path}")
     if request.method == "OPTIONS":
+        logging.info("Handling OPTIONS preflight request")
         response = Response(
             status_code=200,
             headers={
@@ -75,6 +77,7 @@ async def cors_preflight_handler(request: Request, call_next):
                 "Access-Control-Max-Age": "3600",
             }
         )
+        logging.info("Returning OPTIONS response with CORS headers")
         return response
     
     # For non-OPTIONS requests, proceed normally
@@ -86,9 +89,10 @@ async def cors_preflight_handler(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Expose-Headers"] = "*"
     
+    logging.info(f"Added CORS headers to response for {request.method} {request.url.path}")
     return response
 
-# Configure CORS middleware (belt and suspenders approach)
+# Configure CORS middleware as backup (belt and suspenders approach)
 logging.info("Configuring CORS with wildcard for all origins")
 app.add_middleware(
     CORSMiddleware,
