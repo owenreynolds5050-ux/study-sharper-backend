@@ -41,7 +41,7 @@ async def list_files(
     Optionally filter by folder.
     """
     # Build query - select only needed fields for performance
-    query = supabase.table("files").select(
+    query = supabase.table("notes").select(
         "id, title, file_type, file_size_bytes, processing_status, "
         "extraction_method, has_images, folder_id, created_at, updated_at, last_accessed_at"
     ).eq("user_id", user["id"]).order("updated_at", desc=True)
@@ -56,7 +56,7 @@ async def list_files(
     result = query.execute()
     
     # Get total count
-    count_result = supabase.table("files").select("id", count="exact").eq("user_id", user["id"])
+    count_result = supabase.table("notes").select("id", count="exact").eq("user_id", user["id"])
     if folder_id:
         count_result = count_result.eq("folder_id", folder_id)
     count_result = count_result.execute()
@@ -76,13 +76,13 @@ async def get_file(
     user = Depends(get_current_user)
 ):
     """Get full file details including content"""
-    result = supabase.table("files").select("*").eq("id", file_id).eq("user_id", user["id"]).execute()
+    result = supabase.table("notes").select("*").eq("id", file_id).eq("user_id", user["id"]).execute()
     
     if not result.data:
         raise HTTPException(404, "File not found")
     
     # Update last accessed
-    supabase.table("files").update({
+    supabase.table("notes").update({
         "last_accessed_at": "now()"
     }).eq("id", file_id).execute()
     
@@ -120,7 +120,7 @@ async def create_file(
     }
 
     try:
-        result = supabase.table("files").insert(record).execute()
+        result = supabase.table("notes").insert(record).execute()
     except Exception as exc:
         raise HTTPException(500, f"Failed to create note: {exc}")
 
@@ -152,7 +152,7 @@ async def update_file(
 ):
     """Update file metadata or content"""
     # Check ownership
-    existing = supabase.table("files").select("id").eq("id", file_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("notes").select("id").eq("id", file_id).eq("user_id", user["id"]).execute()
     if not existing.data:
         raise HTTPException(404, "File not found")
     
@@ -176,7 +176,7 @@ async def update_file(
     if not updates:
         raise HTTPException(400, "No valid fields to update")
     
-    result = supabase.table("files").update(updates).eq("id", file_id).execute()
+    result = supabase.table("notes").update(updates).eq("id", file_id).execute()
     
     return result.data[0]
 
@@ -189,22 +189,22 @@ async def delete_file(
     from app.services.quota_service import decrement_file_count
     
     # Get file info
-    file_result = supabase.table("files").select("file_size_bytes, original_preview_path").eq("id", file_id).eq("user_id", user["id"]).execute()
+    file_result = supabase.table("notes").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user["id"]).execute()
     
     if not file_result.data:
         raise HTTPException(404, "File not found")
     
     file_data = file_result.data[0]
     
-    # Delete from storage if preview exists
-    if file_data.get("original_preview_path"):
+    # Delete from storage if file exists
+    if file_data.get("file_path"):
         try:
-            supabase.storage.from_("file-processing").remove([file_data["original_preview_path"]])
+            supabase.storage.from_("notes-pdfs").remove([file_data["file_path"]])
         except Exception as e:
             print(f"Warning: Could not delete file from storage: {e}")
     
     # Delete from database (cascades to embeddings)
-    supabase.table("files").delete().eq("id", file_id).execute()
+    supabase.table("notes").delete().eq("id", file_id).execute()
     
     # Update quota
     await decrement_file_count(user["id"], file_data.get("file_size_bytes", 0))
@@ -214,7 +214,7 @@ async def delete_file(
 @router.get("/folders")
 async def list_folders(user = Depends(get_current_user)):
     """List all user's folders in tree structure"""
-    result = supabase.table("file_folders").select("*").eq("user_id", user["id"]).order("position").execute()
+    result = supabase.table("note_folders").select("*").eq("user_id", user["id"]).order("created_at").execute()
     
     return {"folders": result.data}
 
@@ -224,21 +224,12 @@ async def create_folder(
     user = Depends(get_current_user)
 ):
     """Create a new folder"""
-    # Calculate depth
-    depth = 0
-    if folder_data.parent_folder_id:
-        parent = supabase.table("file_folders").select("depth").eq("id", folder_data.parent_folder_id).execute()
-        if parent.data:
-            depth = parent.data[0]["depth"] + 1
-            if depth > 3:
-                raise HTTPException(400, "Maximum folder depth (3 levels) exceeded")
-    
-    result = supabase.table("file_folders").insert({
+    # Note: note_folders table doesn't have depth/parent_folder_id columns
+    # Simplified folder creation
+    result = supabase.table("note_folders").insert({
         "user_id": user["id"],
         "name": folder_data.name,
-        "color": folder_data.color,
-        "parent_folder_id": folder_data.parent_folder_id,
-        "depth": depth
+        "color": folder_data.color
     }).execute()
     
     return result.data[0]
@@ -251,7 +242,7 @@ async def update_folder(
 ):
     """Update folder name or color"""
     # Check ownership
-    existing = supabase.table("file_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
     if not existing.data:
         raise HTTPException(404, "Folder not found")
     
@@ -264,7 +255,7 @@ async def update_folder(
     if not updates:
         raise HTTPException(400, "No valid fields to update")
     
-    result = supabase.table("file_folders").update(updates).eq("id", folder_id).execute()
+    result = supabase.table("note_folders").update(updates).eq("id", folder_id).execute()
     
     return result.data[0]
 
@@ -275,12 +266,12 @@ async def delete_folder(
 ):
     """Delete a folder (files will have folder_id set to NULL)"""
     # Check ownership
-    existing = supabase.table("file_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
     if not existing.data:
         raise HTTPException(404, "Folder not found")
     
     # Delete (ON DELETE SET NULL for files)
-    supabase.table("file_folders").delete().eq("id", folder_id).execute()
+    supabase.table("note_folders").delete().eq("id", folder_id).execute()
     
     return {"success": True}
 
