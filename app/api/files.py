@@ -43,7 +43,7 @@ async def list_files(
     # Build query - select only needed fields for performance
     query = supabase.table("notes").select(
         "id, title, file_type, file_size_bytes, processing_status, "
-        "extraction_method, has_images, folder_id, created_at, updated_at, last_accessed_at"
+        "extraction_method, has_images, folder_id, created_at, updated_at"
     ).eq("user_id", user_id).order("updated_at", desc=True)
     
     # Filter by folder if specified
@@ -80,11 +80,6 @@ async def get_file(
     
     if not result.data:
         raise HTTPException(404, "File not found")
-    
-    # Update last accessed
-    supabase.table("notes").update({
-        "last_accessed_at": "now()"
-    }).eq("id", file_id).execute()
     
     return result.data[0]
 
