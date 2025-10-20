@@ -121,7 +121,11 @@ async def create_file(
     try:
         result = supabase.table("notes").insert(record).execute()
     except Exception as exc:
-        raise HTTPException(500, f"Failed to create note: {exc}")
+        # Log the full error for debugging
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error creating note: {error_details}")
+        raise HTTPException(500, f"Failed to create note: {str(exc)}")
 
     if not result.data:
         raise HTTPException(500, "Failed to create note")
