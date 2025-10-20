@@ -213,7 +213,10 @@ async def delete_file(
 @router.get("/folders")
 async def list_folders(user_id: str = Depends(get_current_user)):
     """List all user's folders in tree structure"""
+    import logging
+    logging.info(f"[FILES API] Fetching folders for user_id: {user_id}")
     result = supabase.table("note_folders").select("*").eq("user_id", user_id).order("created_at").execute()
+    logging.info(f"[FILES API] Found {len(result.data)} folders")
     
     return {"folders": result.data}
 
@@ -223,6 +226,8 @@ async def create_folder(
     user_id: str = Depends(get_current_user)
 ):
     """Create a new folder"""
+    import logging
+    logging.info(f"[FILES API] Creating folder '{folder_data.name}' for user_id: {user_id}")
     # Note: note_folders table doesn't have depth/parent_folder_id columns
     # Simplified folder creation
     result = supabase.table("note_folders").insert({
@@ -230,6 +235,7 @@ async def create_folder(
         "name": folder_data.name,
         "color": folder_data.color
     }).execute()
+    logging.info(f"[FILES API] Folder created successfully: {result.data[0].get('id')}")
     
     return result.data[0]
 
