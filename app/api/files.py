@@ -44,7 +44,7 @@ async def list_files(
     query = supabase.table("notes").select(
         "id, title, file_type, file_size_bytes, processing_status, "
         "extraction_method, has_images, folder_id, created_at, updated_at, last_accessed_at"
-    ).eq("user_id", user["id"]).order("updated_at", desc=True)
+    ).eq("user_id", user).order("updated_at", desc=True)
     
     # Filter by folder if specified
     if folder_id:
@@ -56,7 +56,7 @@ async def list_files(
     result = query.execute()
     
     # Get total count
-    count_result = supabase.table("notes").select("id", count="exact").eq("user_id", user["id"])
+    count_result = supabase.table("notes").select("id", count="exact").eq("user_id", user)
     if folder_id:
         count_result = count_result.eq("folder_id", folder_id)
     count_result = count_result.execute()
@@ -76,7 +76,7 @@ async def get_file(
     user = Depends(get_current_user)
 ):
     """Get full file details including content"""
-    result = supabase.table("notes").select("*").eq("id", file_id).eq("user_id", user["id"]).execute()
+    result = supabase.table("notes").select("*").eq("id", file_id).eq("user_id", user).execute()
     
     if not result.data:
         raise HTTPException(404, "File not found")
@@ -106,15 +106,13 @@ async def create_file(
 
     record = {
         "id": file_id,
-        "user_id": user["id"],
+        "user_id": user,
         "folder_id": file_data.folder_id,
         "title": file_data.title.strip() or "Untitled",
-        "file_type": file_type,
-        "content": content,
+        "extracted_text": content,  # Use extracted_text, not content
         "file_size_bytes": file_size_bytes,
         "processing_status": "completed",
         "extraction_method": "manual",
-        "has_images": False,
         "original_filename": f"{(file_data.title.strip() or 'note')}.{file_type}",
         "edited_manually": True,
     }
@@ -130,7 +128,7 @@ async def create_file(
     # Update quota / counts
     from app.services.quota_service import increment_upload_count
 
-    await increment_upload_count(user["id"], file_size_bytes)
+    await increment_upload_count(user, file_size_bytes)
 
     # Trigger embedding generation for contentful notes
     if content:
@@ -138,7 +136,7 @@ async def create_file(
 
         await job_queue.add_job(
             job_type=JobType.EMBEDDING_GENERATION,
-            job_data={"file_id": file_id, "user_id": user["id"]},
+            job_data={"file_id": file_id, "user_id": user},
             priority=JobPriority.NORMAL,
         )
 
@@ -152,7 +150,7 @@ async def update_file(
 ):
     """Update file metadata or content"""
     # Check ownership
-    existing = supabase.table("notes").select("id").eq("id", file_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("notes").select("id").eq("id", file_id).eq("user_id", user).execute()
     if not existing.data:
         raise HTTPException(404, "File not found")
     
@@ -169,7 +167,7 @@ async def update_file(
         from app.services.job_queue import job_queue, JobType, JobPriority
         await job_queue.add_job(
             job_type=JobType.EMBEDDING_GENERATION,
-            job_data={"file_id": file_id, "user_id": user["id"]},
+            job_data={"file_id": file_id, "user_id": user},
             priority=JobPriority.NORMAL
         )
     
@@ -189,7 +187,7 @@ async def delete_file(
     from app.services.quota_service import decrement_file_count
     
     # Get file info
-    file_result = supabase.table("notes").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user["id"]).execute()
+    file_result = supabase.table("notes").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user).execute()
     
     if not file_result.data:
         raise HTTPException(404, "File not found")
@@ -207,14 +205,14 @@ async def delete_file(
     supabase.table("notes").delete().eq("id", file_id).execute()
     
     # Update quota
-    await decrement_file_count(user["id"], file_data.get("file_size_bytes", 0))
+    await decrement_file_count(user, file_data.get("file_size_bytes", 0))
     
     return {"success": True}
 
 @router.get("/folders")
 async def list_folders(user = Depends(get_current_user)):
     """List all user's folders in tree structure"""
-    result = supabase.table("note_folders").select("*").eq("user_id", user["id"]).order("created_at").execute()
+    result = supabase.table("note_folders").select("*").eq("user_id", user).order("created_at").execute()
     
     return {"folders": result.data}
 
@@ -227,7 +225,7 @@ async def create_folder(
     # Note: note_folders table doesn't have depth/parent_folder_id columns
     # Simplified folder creation
     result = supabase.table("note_folders").insert({
-        "user_id": user["id"],
+        "user_id": user,
         "name": folder_data.name,
         "color": folder_data.color
     }).execute()
@@ -242,7 +240,7 @@ async def update_folder(
 ):
     """Update folder name or color"""
     # Check ownership
-    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user).execute()
     if not existing.data:
         raise HTTPException(404, "Folder not found")
     
@@ -266,7 +264,7 @@ async def delete_folder(
 ):
     """Delete a folder (files will have folder_id set to NULL)"""
     # Check ownership
-    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user["id"]).execute()
+    existing = supabase.table("note_folders").select("id").eq("id", folder_id).eq("user_id", user).execute()
     if not existing.data:
         raise HTTPException(404, "Folder not found")
     
@@ -280,4 +278,4 @@ async def get_quota(user = Depends(get_current_user)):
     """Get user's current quota status"""
     from app.services.quota_service import get_quota_info
     
-    return await get_quota_info(user["id"])
+    return await get_quota_info(user)
