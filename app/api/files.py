@@ -1,5 +1,7 @@
 # app/api/files.py
-from fastapi import APIRouter, Depends, HTTPException, Query
+# Consolidated API for file and note management
+# Replaces the old notes.py API - all functionality unified here
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from typing import Optional, List
 import uuid
 from app.core.auth import get_current_user
@@ -12,6 +14,12 @@ class FileUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     folder_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+    summary: Optional[str] = None
+
+class PatchFileText(BaseModel):
+    """Model for updating file content (extracted_text) via PATCH."""
+    content: str  # Will be stored in both content and extracted_text
 
 class FolderCreate(BaseModel):
     name: str
@@ -41,7 +49,7 @@ async def list_files(
     Optionally filter by folder.
     """
     # Build query - select only needed fields for performance
-    query = supabase.table("notes").select(
+    query = supabase.table("files").select(
         "id, title, file_type, file_size_bytes, processing_status, "
         "extraction_method, has_images, folder_id, created_at, updated_at"
     ).eq("user_id", user_id).order("updated_at", desc=True)
@@ -55,13 +63,22 @@ async def list_files(
     
     result = query.execute()
     
+    # Add cache headers (30 second cache)
+    response = Response()
+    response.headers["Cache-Control"] = "private, max-age=30"
+    
     # Get total count
-    count_result = supabase.table("notes").select("id", count="exact").eq("user_id", user_id)
+    count_result = supabase.table("files").select("id", count="exact").eq("user_id", user_id)
     if folder_id:
         count_result = count_result.eq("folder_id", folder_id)
     count_result = count_result.execute()
     
     total_count = count_result.count if hasattr(count_result, 'count') else len(result.data)
+    
+    # Add pagination headers
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Offset"] = str(offset)
     
     return {
         "files": result.data,
@@ -75,8 +92,8 @@ async def get_file(
     file_id: str,
     user_id: str = Depends(get_current_user)
 ):
-    """Get full file details including content"""
-    result = supabase.table("notes").select("*").eq("id", file_id).eq("user_id", user_id).execute()
+    """Get full file details including content, extracted_text, and all other fields."""
+    result = supabase.table("files").select("*").eq("id", file_id).eq("user_id", user_id).execute()
     
     if not result.data:
         raise HTTPException(404, "File not found")
@@ -115,7 +132,7 @@ async def create_file(
     }
 
     try:
-        result = supabase.table("notes").insert(record).execute()
+        result = supabase.table("files").insert(record).execute()
     except Exception as exc:
         # Log the full error for debugging
         import traceback
@@ -149,9 +166,9 @@ async def update_file(
     update_data: FileUpdate,
     user_id: str = Depends(get_current_user)
 ):
-    """Update file metadata or content"""
+    """Update file metadata, content, tags, or other fields"""
     # Check ownership
-    existing = supabase.table("notes").select("id").eq("id", file_id).eq("user_id", user_id).execute()
+    existing = supabase.table("files").select("id").eq("id", file_id).eq("user_id", user_id).execute()
     if not existing.data:
         raise HTTPException(404, "File not found")
     
@@ -163,6 +180,8 @@ async def update_file(
         updates["folder_id"] = update_data.folder_id
     if update_data.content is not None:
         updates["content"] = update_data.content
+        updates["extracted_text"] = update_data.content  # Keep both in sync
+        updates["edited_manually"] = True
         
         # If content changed, re-generate embedding
         from app.services.job_queue import job_queue, JobType, JobPriority
@@ -171,11 +190,15 @@ async def update_file(
             job_data={"file_id": file_id, "user_id": user_id},
             priority=JobPriority.NORMAL
         )
+    if update_data.tags is not None:
+        updates["tags"] = update_data.tags
+    if update_data.summary is not None:
+        updates["summary"] = update_data.summary
     
     if not updates:
         raise HTTPException(400, "No valid fields to update")
     
-    result = supabase.table("notes").update(updates).eq("id", file_id).execute()
+    result = supabase.table("files").update(updates).eq("id", file_id).execute()
     
     return result.data[0]
 
@@ -184,11 +207,11 @@ async def delete_file(
     file_id: str,
     user_id: str = Depends(get_current_user)
 ):
-    """Delete a file"""
+    """Delete a file and its associated storage"""
     from app.services.quota_service import decrement_file_count
     
     # Get file info
-    file_result = supabase.table("notes").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user_id).execute()
+    file_result = supabase.table("files").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user_id).execute()
     
     if not file_result.data:
         raise HTTPException(404, "File not found")
@@ -203,7 +226,7 @@ async def delete_file(
             print(f"Warning: Could not delete file from storage: {e}")
     
     # Delete from database (cascades to embeddings)
-    supabase.table("notes").delete().eq("id", file_id).execute()
+    supabase.table("files").delete().eq("id", file_id).execute()
     
     # Update quota
     await decrement_file_count(user_id, file_data.get("file_size_bytes", 0))
@@ -286,3 +309,64 @@ async def get_quota(user_id: str = Depends(get_current_user)):
     from app.services.quota_service import get_quota_info
     
     return await get_quota_info(user_id)
+
+
+# ============================================================================
+# LEGACY NOTES API COMPATIBILITY ENDPOINTS
+# These endpoints maintain backward compatibility with the old /api/notes API
+# They simply proxy to the files endpoints above
+# ============================================================================
+
+@router.get("/notes")
+async def get_notes_legacy(
+    response: Response,
+    limit: int = 100,
+    offset: int = 0,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy notes endpoint - proxies to files API"""
+    return await list_files(None, limit, offset, user_id)
+
+@router.get("/notes/{note_id}")
+async def get_note_legacy(
+    note_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy note detail endpoint - proxies to files API"""
+    return await get_file(note_id, user_id)
+
+@router.post("/notes")
+async def create_note_legacy(
+    file_data: FileCreate,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy note creation endpoint - proxies to files API"""
+    result = await create_file(file_data, user_id)
+    return result["file"] if isinstance(result, dict) and "file" in result else result
+
+@router.patch("/notes/{note_id}")
+async def patch_note_legacy(
+    note_id: str,
+    patch_data: PatchFileText,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy note text update endpoint - proxies to files API"""
+    update_data = FileUpdate(content=patch_data.content)
+    return await update_file(note_id, update_data, user_id)
+
+@router.delete("/notes/{note_id}")
+async def delete_note_legacy(
+    note_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy note deletion endpoint - proxies to files API"""
+    return await delete_file(note_id, user_id)
+
+@router.put("/notes/{note_id}")
+async def update_note_folder_legacy(
+    note_id: str,
+    update_data: FileUpdate,
+    user_id: str = Depends(get_current_user)
+):
+    """Legacy note update endpoint - proxies to files API"""
+    return await update_file(note_id, update_data, user_id)

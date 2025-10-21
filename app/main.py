@@ -4,8 +4,8 @@ from fastapi.responses import StreamingResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.api import notes, chat, embeddings, folders, flashcards, ai_chat
-# Old upload disabled - using new file_upload API
+from app.api import chat, embeddings, folders, flashcards, ai_chat
+# Notes API removed - consolidated into files API
 from app.api.files import router as files_router
 from app.api.file_upload import router as file_upload_router
 from app.core.config import ALLOWED_ORIGINS_LIST
@@ -180,14 +180,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.include_router(notes.router, prefix="/api")
+app.include_router(files_router, prefix="/api", tags=["files"])  # Consolidated notes + files
 app.include_router(chat.router, prefix="/api")
-# app.include_router(upload.router, prefix="/api", tags=["upload"])  # Old upload disabled
 app.include_router(embeddings.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(flashcards.router, prefix="/api")
 app.include_router(ai_chat.router, prefix="/api")
-app.include_router(files_router, prefix="/api", tags=["files"])
 app.include_router(file_upload_router, prefix="/api", tags=["upload"])
 
 @app.get("/")
