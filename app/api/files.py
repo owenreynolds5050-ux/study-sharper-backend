@@ -41,7 +41,7 @@ async def list_files(
     Optionally filter by folder.
     """
     # Build query - select only needed fields for performance
-    query = supabase.table("notes").select(
+    query = supabase.table("files").select(
         "id, title, file_type, file_size_bytes, processing_status, "
         "extraction_method, has_images, folder_id, created_at, updated_at"
     ).eq("user_id", user_id).order("updated_at", desc=True)
@@ -56,7 +56,7 @@ async def list_files(
     result = query.execute()
     
     # Get total count
-    count_result = supabase.table("notes").select("id", count="exact").eq("user_id", user_id)
+    count_result = supabase.table("files").select("id", count="exact").eq("user_id", user_id)
     if folder_id:
         count_result = count_result.eq("folder_id", folder_id)
     count_result = count_result.execute()
@@ -76,7 +76,7 @@ async def get_file(
     user_id: str = Depends(get_current_user)
 ):
     """Get full file details including content"""
-    result = supabase.table("notes").select("*").eq("id", file_id).eq("user_id", user_id).execute()
+    result = supabase.table("files").select("*").eq("id", file_id).eq("user_id", user_id).execute()
     
     if not result.data:
         raise HTTPException(404, "File not found")
@@ -105,17 +105,15 @@ async def create_file(
         "folder_id": file_data.folder_id,
         "title": file_data.title.strip() or "Untitled",
         "file_type": file_type,
-        "content": content,  # Required by NOT NULL constraint
-        "extracted_text": content,  # Also store in extracted_text for consistency
+        "content": content,
         "file_size_bytes": file_size_bytes,
         "processing_status": "completed",
         "extraction_method": "manual",
         "original_filename": f"{(file_data.title.strip() or 'note')}.{file_type}",
-        "edited_manually": True,
     }
 
     try:
-        result = supabase.table("notes").insert(record).execute()
+        result = supabase.table("files").insert(record).execute()
     except Exception as exc:
         # Log the full error for debugging
         import traceback
@@ -151,7 +149,7 @@ async def update_file(
 ):
     """Update file metadata or content"""
     # Check ownership
-    existing = supabase.table("notes").select("id").eq("id", file_id).eq("user_id", user_id).execute()
+    existing = supabase.table("files").select("id").eq("id", file_id).eq("user_id", user_id).execute()
     if not existing.data:
         raise HTTPException(404, "File not found")
     
@@ -175,7 +173,7 @@ async def update_file(
     if not updates:
         raise HTTPException(400, "No valid fields to update")
     
-    result = supabase.table("notes").update(updates).eq("id", file_id).execute()
+    result = supabase.table("files").update(updates).eq("id", file_id).execute()
     
     return result.data[0]
 
@@ -188,7 +186,7 @@ async def delete_file(
     from app.services.quota_service import decrement_file_count
     
     # Get file info
-    file_result = supabase.table("notes").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user_id).execute()
+    file_result = supabase.table("files").select("file_size_bytes, original_preview_path").eq("id", file_id).eq("user_id", user_id).execute()
     
     if not file_result.data:
         raise HTTPException(404, "File not found")
@@ -196,14 +194,14 @@ async def delete_file(
     file_data = file_result.data[0]
     
     # Delete from storage if file exists
-    if file_data.get("file_path"):
+    if file_data.get("original_preview_path"):
         try:
-            supabase.storage.from_("notes-pdfs").remove([file_data["file_path"]])
+            supabase.storage.from_("file-processing").remove([file_data["original_preview_path"]])
         except Exception as e:
             print(f"Warning: Could not delete file from storage: {e}")
     
     # Delete from database (cascades to embeddings)
-    supabase.table("notes").delete().eq("id", file_id).execute()
+    supabase.table("files").delete().eq("id", file_id).execute()
     
     # Update quota
     await decrement_file_count(user_id, file_data.get("file_size_bytes", 0))
