@@ -30,10 +30,10 @@ def check_environment_variables() -> bool:
     if not SUPABASE_KEY or SUPABASE_KEY == "your-service-role-key-here":
         missing_vars.append("SUPABASE_SERVICE_ROLE_KEY")
     
-    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your-openrouter-api-key":
-        missing_vars.append("OPENROUTER_API_KEY")
-    
     # Non-critical but important
+    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your-openrouter-api-key":
+        warnings.append("OPENROUTER_API_KEY not configured - AI features will be limited")
+    
     if not ALLOWED_ORIGINS_LIST or ALLOWED_ORIGINS_LIST == ["*"]:
         warnings.append("ALLOWED_ORIGINS not configured - using wildcard (*) which is insecure for production")
     
@@ -116,7 +116,7 @@ def check_dependencies() -> bool:
 def run_startup_checks():
     """
     Run all startup checks.
-    Exits the application if critical checks fail.
+    Log warnings but don't exit - allow app to start for health checks.
     """
     logger.info("Running startup checks...")
     
@@ -124,7 +124,8 @@ def run_startup_checks():
     deps_ok = check_dependencies()
     
     if not env_ok or not deps_ok:
-        logger.error("Startup checks failed. Please fix the issues above and restart.")
-        sys.exit(1)
-    
-    logger.info("✅ All startup checks passed. Application ready.")
+        logger.warning("⚠️  Startup checks failed - some features may not work correctly.")
+        logger.warning("Please configure environment variables to enable all features.")
+        # Don't exit - allow app to start so Railway can check /health endpoint
+    else:
+        logger.info("✅ All startup checks passed. Application ready.")
