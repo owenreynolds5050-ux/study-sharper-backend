@@ -28,7 +28,7 @@ async def upload_file(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     folder_id: Optional[str] = Form(None),
-    user = Depends(get_current_user)
+    user_id: str = Depends(get_current_user)
 ):
     """Upload a single file and queue for processing"""
     
@@ -44,7 +44,7 @@ async def upload_file(
     
     # Get user's quota info to check premium status
     from app.services.quota_service import get_or_create_quota
-    quota = await get_or_create_quota(user['id'])
+    quota = await get_or_create_quota(user_id)
     is_premium = quota.get('is_premium', False)
     
     # Check file size limit
@@ -55,13 +55,13 @@ async def upload_file(
     
     # Check quota (daily uploads and storage)
     try:
-        await check_upload_quota(user['id'], file_size)
+        await check_upload_quota(user_id, file_size)
     except HTTPException as e:
         raise e
     
     # Generate IDs
     file_id = str(uuid.uuid4())
-    storage_path = f"{user['id']}/{file_id}"
+    storage_path = f"{user_id}/{file_id}"
     
     # Upload to storage
     try:
@@ -76,7 +76,7 @@ async def upload_file(
     # Create file record
     file_record = {
         "id": file_id,
-        "user_id": user['id'],
+        "user_id": user_id,
         "folder_id": folder_id,
         "title": title or file.filename,
         "original_filename": file.filename,
@@ -88,7 +88,7 @@ async def upload_file(
     result = supabase.table("files").insert(file_record).execute()
     
     # Update quota
-    await increment_upload_count(user['id'], file_size)
+    await increment_upload_count(user_id, file_size)
     
     # Queue for processing
     job_type = JobType.AUDIO_TRANSCRIPTION if file_type == 'audio' else JobType.TEXT_EXTRACTION
@@ -98,7 +98,7 @@ async def upload_file(
             job_type=job_type,
             job_data={
                 "file_id": file_id,
-                "user_id": user['id'],
+                "user_id": user_id,
                 "storage_path": storage_path,
                 "file_type": file_type
             },
@@ -122,7 +122,7 @@ async def upload_file(
 async def upload_bulk_files(
     files: List[UploadFile] = File(...),
     folder_id: Optional[str] = Form(None),
-    user = Depends(get_current_user)
+    user_id: str = Depends(get_current_user)
 ):
     """Upload multiple files at once"""
     
@@ -134,7 +134,7 @@ async def upload_bulk_files(
     
     for file in files:
         try:
-            result = await upload_file(file=file, title=None, folder_id=folder_id, user=user)
+            result = await upload_file(file=file, title=None, folder_id=folder_id, user_id=user_id)
             uploaded_files.append(result["file"])
         except HTTPException as e:
             errors.append({
@@ -160,7 +160,7 @@ async def upload_folder(
     files: List[UploadFile] = File(...),
     folder_structure: str = Form(...),
     parent_folder_id: Optional[str] = Form(None),
-    user = Depends(get_current_user)
+    user_id: str = Depends(get_current_user)
 ):
     """
     Upload multiple files with folder structure preserved.
@@ -203,7 +203,7 @@ async def upload_folder(
             
             # Create folder
             folder_result = supabase.table("file_folders").insert({
-                "user_id": user["id"],
+                "user_id": user_id,
                 "name": part,
                 "parent_folder_id": current_parent,
                 "depth": depth
@@ -229,7 +229,7 @@ async def upload_folder(
                 file=files[file_index],
                 title=title,
                 folder_id=target_folder_id,
-                user=user
+                user_id=user_id
             )
             uploaded_files.append(result["file"])
         except Exception as e:
@@ -248,13 +248,13 @@ async def upload_youtube_transcript(
     url: str = Form(...),
     title: Optional[str] = Form(None),
     folder_id: Optional[str] = Form(None),
-    user = Depends(get_current_user)
+    user_id: str = Depends(get_current_user)
 ):
     """Upload YouTube video transcript via n8n workflow"""
     from app.services.youtube_transcript import fetch_youtube_transcript
     
     # Check quota
-    await check_upload_quota(user['id'], 0)  # YouTube transcripts don't count toward storage
+    await check_upload_quota(user_id, 0)  # YouTube transcripts don't count toward storage
     
     # Fetch transcript from n8n workflow
     try:
@@ -267,7 +267,7 @@ async def upload_youtube_transcript(
     # Create file record with transcript
     file_data = {
         "id": file_id,
-        "user_id": user['id'],
+        "user_id": user_id,
         "folder_id": folder_id,
         "title": title or transcript_data.get('title', 'YouTube Transcript'),
         "original_filename": url,
@@ -282,11 +282,11 @@ async def upload_youtube_transcript(
     # Queue embedding generation
     await job_queue.add_job(
         job_type=JobType.EMBEDDING_GENERATION,
-        job_data={"file_id": file_id, "user_id": user['id']},
+        job_data={"file_id": file_id, "user_id": user_id},
         priority=JobPriority.LOW
     )
     
-    await increment_upload_count(user['id'], 0)
+    await increment_upload_count(user_id, 0)
     
     return {
         "success": True,
@@ -296,11 +296,11 @@ async def upload_youtube_transcript(
 @router.post("/files/{file_id}/retry")
 async def retry_processing(
     file_id: str,
-    user = Depends(get_current_user)
+    user_id: str = Depends(get_current_user)
 ):
     """Retry processing a failed file"""
     # Get file
-    file_result = supabase.table("files").select("*").eq("id", file_id).eq("user_id", user["id"]).execute()
+    file_result = supabase.table("files").select("*").eq("id", file_id).eq("user_id", user_id).execute()
     
     if not file_result.data:
         raise HTTPException(404, "File not found")
@@ -323,8 +323,8 @@ async def retry_processing(
         job_type=job_type,
         job_data={
             "file_id": file_id,
-            "user_id": user["id"],
-            "storage_path": file_data.get("original_preview_path", f"{user['id']}/{file_id}"),
+            "user_id": user_id,
+            "storage_path": file_data.get("original_preview_path", f"{user_id}/{file_id}"),
             "file_type": file_data["file_type"]
         },
         priority=JobPriority.HIGH  # Retries get higher priority
