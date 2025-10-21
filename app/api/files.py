@@ -226,7 +226,10 @@ async def delete_file(
             print(f"Warning: Could not delete file from storage: {e}")
     
     # Delete from database (cascades to embeddings)
-    supabase.table("files").delete().eq("id", file_id).execute()
+    delete_result = supabase.table("files").delete().eq("id", file_id).eq("user_id", user_id).execute()
+    
+    if not delete_result.data:
+        raise HTTPException(500, "Failed to delete file from database")
     
     # Update quota
     await decrement_file_count(user_id, file_data.get("file_size_bytes", 0))
