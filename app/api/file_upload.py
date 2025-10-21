@@ -7,6 +7,7 @@ from app.services.quota_service import check_upload_quota, increment_upload_coun
 from app.core.database import supabase
 import uuid
 import json
+import asyncio
 
 router = APIRouter()
 
@@ -90,33 +91,152 @@ async def upload_file(
     # Update quota
     await increment_upload_count(user_id, file_size)
     
-    # Queue for processing
-    job_type = JobType.AUDIO_TRANSCRIPTION if file_type == 'audio' else JobType.TEXT_EXTRACTION
-    
-    try:
-        await job_queue.add_job(
-            job_type=job_type,
-            job_data={
-                "file_id": file_id,
-                "user_id": user_id,
-                "storage_path": storage_path,
-                "file_type": file_type
-            },
-            priority=JobPriority.NORMAL
-        )
-    except MemoryError as e:
-        # If memory is too high, still return success but warn user
+    # SYNCHRONOUS PROCESSING for text files (immediate)
+    # Audio files still queued (they take too long)
+    if file_type == 'audio':
+        # Queue audio files (transcription takes 1-5 minutes)
+        try:
+            await job_queue.add_job(
+                job_type=JobType.AUDIO_TRANSCRIPTION,
+                job_data={
+                    "file_id": file_id,
+                    "user_id": user_id,
+                    "storage_path": storage_path,
+                    "file_type": file_type
+                },
+                priority=JobPriority.NORMAL
+            )
+        except:
+            pass  # Job queue might not work on free tier
+        
         return {
             "success": True,
             "file": result.data[0],
-            "warning": "Server is under heavy load. Your file will be processed soon."
+            "message": "Audio file uploaded and queued for transcription"
         }
     
-    return {
-        "success": True,
-        "file": result.data[0],
-        "message": "File uploaded and queued for processing"
-    }
+    # Process text files immediately (PDF, DOCX, TXT, MD)
+    try:
+        # Process with 30-second timeout
+        await asyncio.wait_for(
+            process_file_immediately(file_id, user_id, contents, file_type, storage_path),
+            timeout=30.0
+        )
+        
+        # Get updated file
+        updated_file = supabase.table("files").select("*").eq("id", file_id).execute()
+        
+        return {
+            "success": True,
+            "file": updated_file.data[0] if updated_file.data else result.data[0],
+            "message": "File uploaded and processed successfully"
+        }
+        
+    except asyncio.TimeoutError:
+        # Timeout - mark as failed
+        supabase.table("files").update({
+            "processing_status": "failed",
+            "error_message": "Processing timeout (file too large or complex)"
+        }).eq("id", file_id).execute()
+        
+        return {
+            "success": True,
+            "file": result.data[0],
+            "message": "File uploaded but processing timed out. Try a smaller file."
+        }
+        
+    except Exception as e:
+        # Processing failed - mark as failed
+        error_msg = str(e)
+        supabase.table("files").update({
+            "processing_status": "failed",
+            "error_message": error_msg
+        }).eq("id", file_id).execute()
+        
+        return {
+            "success": True,
+            "file": result.data[0],
+            "error": error_msg,
+            "message": "File uploaded but processing failed"
+        }
+
+async def process_file_immediately(file_id: str, user_id: str, file_data: bytes, file_type: str, storage_path: str):
+    """
+    Process file immediately (synchronously) instead of queuing.
+    Used for text files (PDF, DOCX, TXT, MD) that process quickly.
+    """
+    from app.services.text_extraction_v2 import extract_text_from_file
+    from app.services.embeddings import generate_embedding
+    import hashlib
+    
+    try:
+        # Update status to processing
+        supabase.table("files").update({
+            "processing_status": "processing"
+        }).eq("id", file_id).execute()
+        
+        # Extract text using cascading method (PyPDF → pdfminer → OCR)
+        result = await extract_text_from_file(file_data, file_type, file_id)
+        
+        # Determine if we keep the original file
+        has_images = False
+        original_preview_path = None
+        file_path = None
+        
+        if file_type == "pdf" and result.get("has_images"):
+            has_images = True
+            original_preview_path = storage_path
+            file_path = storage_path
+        else:
+            # Delete original file to save storage (text-only files)
+            try:
+                supabase.storage.from_("file-processing").remove([storage_path])
+            except Exception as e:
+                print(f"Warning: Could not delete file {storage_path}: {e}")
+        
+        # Update file record with extracted content
+        supabase.table("files").update({
+            "content": result["text"],
+            "extracted_text": result["text"],  # For compatibility
+            "extraction_method": result["method"],
+            "has_images": has_images,
+            "original_preview_path": original_preview_path,
+            "file_path": file_path,
+            "processing_status": "completed"
+        }).eq("id", file_id).execute()
+        
+        # Generate embedding (quick, do it now)
+        try:
+            file_result = supabase.table("files").select("title, content").eq("id", file_id).execute()
+            if file_result.data:
+                file_record = file_result.data[0]
+                text = f"{file_record['title']}\n\n{file_record['content'] or ''}"
+                
+                # Limit to 8000 characters
+                if len(text) > 8000:
+                    text = text[:8000]
+                
+                embedding = await generate_embedding(text)
+                content_hash = hashlib.sha256(text.encode()).hexdigest()
+                
+                # Insert embedding
+                supabase.table("file_embeddings").insert({
+                    "file_id": file_id,
+                    "user_id": user_id,
+                    "embedding": embedding,
+                    "content_hash": content_hash
+                }).execute()
+        except Exception as e:
+            print(f"Warning: Embedding generation failed for {file_id}: {e}")
+            # Don't fail the whole process if embedding fails
+        
+    except Exception as e:
+        # Mark as failed
+        supabase.table("files").update({
+            "processing_status": "failed",
+            "error_message": str(e)
+        }).eq("id", file_id).execute()
+        raise
 
 @router.post("/upload-bulk")
 async def upload_bulk_files(
