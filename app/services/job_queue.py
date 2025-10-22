@@ -1,10 +1,14 @@
 # app/services/job_queue.py
 import asyncio
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from enum import Enum
 import psutil
 from datetime import datetime
 from app.core.database import supabase
+from app.core.websocket import ws_manager
+import logging
+
+logger = logging.getLogger(__name__)
 
 class JobType(str, Enum):
     TEXT_EXTRACTION = "text_extraction"
@@ -28,7 +32,7 @@ class JobQueue:
             job_type: asyncio.PriorityQueue() for job_type in JobType
         }
         self.active_jobs: Dict[JobType, int] = {job_type: 0 for job_type in JobType}
-        
+
         # CRITICAL: Limit concurrent jobs to prevent crashes
         self.max_concurrent_jobs = {
             JobType.TEXT_EXTRACTION: 5,
@@ -36,7 +40,7 @@ class JobQueue:
             JobType.AUDIO_TRANSCRIPTION: 3,
             JobType.EMBEDDING_GENERATION: 10
         }
-        
+
         self.memory_threshold = 0.80  # 80% RAM usage limit
         self.workers: Dict[JobType, List[asyncio.Task]] = {}
         self._running = False
@@ -69,91 +73,116 @@ class JobQueue:
             "status": "queued",
             "priority": priority.value
         }).execute()
-        
+
         job_id = job_record.data[0]["id"]
         job_data["job_id"] = job_id
-        
+
         # Add to queue (negative priority for max-heap behavior)
         await self.queues[job_type].put((-priority.value, datetime.now(), job_data))
-        
-        print(f"✓ Job {job_id} added to {job_type.value} queue")
+
+        logger.info("✓ Job %s added to %s queue", job_id, job_type.value)
         return job_id
     
     async def process_job(self, job_type: JobType):
         """Worker that processes jobs from queue"""
-        
+
         while self._running:
             try:
-                # Wait for job with timeout to allow graceful shutdown
                 try:
                     priority, timestamp, job_data = await asyncio.wait_for(
-                        self.queues[job_type].get(), 
+                        self.queues[job_type].get(),
                         timeout=1.0
                     )
                 except asyncio.TimeoutError:
+                    # Backfill from database when queue is empty
+                    queued_job = supabase.table("processing_jobs").select("*") \
+                        .eq("job_type", job_type.value) \
+                        .eq("status", "queued") \
+                        .order("priority", desc=True) \
+                        .order("created_at") \
+                        .limit(1) \
+                        .execute()
+
+                    if queued_job.data:
+                        job = queued_job.data[0]
+                        job_data = {
+                            "job_id": job["id"],
+                            "file_id": job["file_id"],
+                            "user_id": job["user_id"],
+                            "storage_path": job.get("storage_path"),
+                            "file_type": job.get("file_type"),
+                            "priority": job.get("priority", JobPriority.NORMAL.value)
+                        }
+                        await self.queues[job_type].put((-
+                            job_data.get("priority", JobPriority.NORMAL.value),
+                            datetime.now(),
+                            job_data
+                        ))
                     continue
-                
-                # Wait if at concurrency limit or low memory
+
                 while (self.active_jobs[job_type] >= self.max_concurrent_jobs[job_type] or
                        not self.check_memory()):
                     if not self._running:
-                        # Re-queue the job if shutting down
                         await self.queues[job_type].put((priority, timestamp, job_data))
                         return
                     await asyncio.sleep(1)
-                
+
                 self.active_jobs[job_type] += 1
-                
-                # Update job status to processing
+                job_id = job_data["job_id"]
+
                 supabase.table("processing_jobs").update({
                     "status": "processing",
                     "started_at": datetime.now().isoformat()
-                }).eq("id", job_data["job_id"]).execute()
-                
-                # Process the job
+                }).eq("id", job_id).execute()
+
+                await ws_manager.send_file_update(job_data["user_id"], job_data["file_id"], {
+                    "status": "processing",
+                    "job_id": job_id,
+                    "job_type": job_type.value
+                })
+
                 try:
                     from app.services.file_processor import process_file
                     await process_file(job_data, job_type)
-                    
-                    # Mark as completed
+
                     supabase.table("processing_jobs").update({
                         "status": "completed",
                         "completed_at": datetime.now().isoformat()
-                    }).eq("id", job_data["job_id"]).execute()
-                    
-                    print(f"✓ Job {job_data['job_id']} completed")
-                    
+                    }).eq("id", job_id).execute()
+
+                    await ws_manager.send_file_update(job_data["user_id"], job_data["file_id"], {
+                        "status": "completed",
+                        "job_id": job_id,
+                        "job_type": job_type.value
+                    })
+
                 except Exception as e:
-                    print(f"✗ Job {job_data['job_id']} failed: {str(e)}")
-                    
-                    # Update attempts and mark as failed if max attempts reached
-                    job_record = supabase.table("processing_jobs").select("attempts").eq("id", job_data["job_id"]).execute()
-                    attempts = job_record.data[0]["attempts"] + 1
-                    
-                    if attempts >= 3:
-                        supabase.table("processing_jobs").update({
-                            "status": "failed",
-                            "attempts": attempts,
-                            "error_message": str(e),
-                            "completed_at": datetime.now().isoformat()
-                        }).eq("id", job_data["job_id"]).execute()
-                    else:
-                        # Retry by re-queueing
-                        supabase.table("processing_jobs").update({
-                            "status": "queued",
-                            "attempts": attempts,
-                            "error_message": str(e)
-                        }).eq("id", job_data["job_id"]).execute()
-                        
-                        await self.queues[job_type].put((priority, datetime.now(), job_data))
-                
+                    logger.exception("✗ Job %s failed", job_id)
+
+                    job_record = supabase.table("processing_jobs").select("attempts").eq("id", job_id).execute()
+                    attempts = job_record.data[0]["attempts"] + 1 if job_record.data else 1
+
+                    supabase.table("processing_jobs").update({
+                        "status": "failed",
+                        "attempts": attempts,
+                        "error_message": str(e),
+                        "completed_at": datetime.now().isoformat()
+                    }).eq("id", job_id).execute()
+
+                    await ws_manager.send_file_update(job_data["user_id"], job_data["file_id"], {
+                        "status": "failed",
+                        "job_id": job_id,
+                        "job_type": job_type.value,
+                        "error": str(e)
+                    })
+
                 finally:
                     self.active_jobs[job_type] -= 1
                     self.queues[job_type].task_done()
-                    
+
             except Exception as e:
-                print(f"Worker error for {job_type.value}: {e}")
-                if job_type in self.active_jobs and self.active_jobs[job_type] > 0:
+                logger.exception("Worker error for %s", job_type.value)
+                if self.active_jobs[job_type] > 0:
                     self.active_jobs[job_type] -= 1
     
     def start_workers(self):

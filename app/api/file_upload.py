@@ -5,11 +5,12 @@ from app.core.auth import get_current_user
 from app.services.job_queue import job_queue, JobType, JobPriority
 from app.services.quota_service import check_upload_quota, increment_upload_count, get_file_size_limit
 from app.core.database import supabase
+import logging
 import uuid
 import json
-import asyncio
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Allowed MIME types
 ALLOWED_MIME_TYPES = {
@@ -91,74 +92,58 @@ async def upload_file(
     # Update quota
     await increment_upload_count(user_id, file_size)
     
-    # SYNCHRONOUS PROCESSING for text files (immediate)
-    # Audio files still queued (they take too long)
-    if file_type == 'audio':
-        # Queue audio files (transcription takes 1-5 minutes)
-        try:
-            await job_queue.add_job(
-                job_type=JobType.AUDIO_TRANSCRIPTION,
-                job_data={
-                    "file_id": file_id,
-                    "user_id": user_id,
-                    "storage_path": storage_path,
-                    "file_type": file_type
-                },
-                priority=JobPriority.NORMAL
-            )
-        except:
-            pass  # Job queue might not work on free tier
-        
-        return {
-            "success": True,
-            "file": result.data[0],
-            "message": "Audio file uploaded and queued for transcription"
-        }
-    
-    # Process text files immediately (PDF, DOCX, TXT, MD)
+    job_type = JobType.AUDIO_TRANSCRIPTION if file_type == 'audio' else JobType.TEXT_EXTRACTION
+    job_priority = JobPriority.NORMAL
+    job_data = {
+        "file_id": file_id,
+        "user_id": user_id,
+        "storage_path": storage_path,
+        "file_type": file_type
+    }
+
     try:
-        # Process with 30-second timeout
-        await asyncio.wait_for(
-            process_file_immediately(file_id, user_id, contents, file_type, storage_path),
-            timeout=30.0
+        processing_job_id = await job_queue.add_job(
+            job_type=job_type,
+            job_data=job_data,
+            priority=job_priority
         )
-        
-        # Get updated file
-        updated_file = supabase.table("files").select("*").eq("id", file_id).execute()
-        
-        return {
-            "success": True,
-            "file": updated_file.data[0] if updated_file.data else result.data[0],
-            "message": "File uploaded and processed successfully"
-        }
-        
-    except asyncio.TimeoutError:
-        # Timeout - mark as failed
+    except Exception as queue_error:
+        logger.exception(
+            "Failed to queue processing job for file_id=%s (%s)",
+            file_id,
+            type(queue_error).__name__
+        )
+        try:
+            supabase.table("files").update({
+                "processing_status": "failed",
+                "error_message": str(queue_error)
+            }).eq("id", file_id).execute()
+        except Exception as db_error:
+            logger.exception(
+                "Failed to update Supabase status after queue error for file_id=%s (%s)",
+                file_id,
+                type(db_error).__name__
+            )
+        raise HTTPException(500, "File uploaded but processing could not be queued. Please try again later.")
+
+    try:
         supabase.table("files").update({
-            "processing_status": "failed",
-            "error_message": "Processing timeout (file too large or complex)"
+            "processing_status": "queued",
+            "error_message": None
         }).eq("id", file_id).execute()
-        
-        return {
-            "success": True,
-            "file": result.data[0],
-            "message": "File uploaded but processing timed out. Try a smaller file."
-        }
-        
-    except Exception as e:
-        # Processing failed - mark as failed
-        error_msg = str(e)
-        supabase.table("files").update({
-            "processing_status": "failed",
-            "error_message": error_msg
-        }).eq("id", file_id).execute()
-        
-        return {
-            "success": True,
-            "file": result.data[0],
-            "error": error_msg,
-            "message": "File uploaded but processing failed"
-        }
+    except Exception as status_error:
+        logger.exception(
+            "Failed to update file status to queued for file_id=%s (%s)",
+            file_id,
+            type(status_error).__name__
+        )
+
+    return {
+        "success": True,
+        "file_id": file_id,
+        "message": "File uploaded. Processing started.",
+        "processing_job_id": processing_job_id
+    }
 
 async def process_file_immediately(file_id: str, user_id: str, file_data: bytes, file_type: str, storage_path: str):
     """
@@ -166,7 +151,7 @@ async def process_file_immediately(file_id: str, user_id: str, file_data: bytes,
     Used for text files (PDF, DOCX, TXT, MD) that process quickly.
     """
     from app.services.text_extraction_v2 import extract_text_from_file
-    from app.services.embeddings import generate_embedding
+    from app.services.embedding_service import generate_embedding
     import hashlib
     
     try:
@@ -176,7 +161,7 @@ async def process_file_immediately(file_id: str, user_id: str, file_data: bytes,
         }).eq("id", file_id).execute()
         
         # Extract text using cascading method (PyPDF → pdfminer → OCR)
-        result = await extract_text_from_file(file_data, file_type, file_id)
+        result = extract_text_from_file(file_data, file_type, file_id)
         
         # Determine if we keep the original file
         has_images = False
@@ -216,7 +201,7 @@ async def process_file_immediately(file_id: str, user_id: str, file_data: bytes,
                 if len(text) > 8000:
                     text = text[:8000]
                 
-                embedding = await generate_embedding(text)
+                embedding = generate_embedding(text)
                 content_hash = hashlib.sha256(text.encode()).hexdigest()
                 
                 # Insert embedding

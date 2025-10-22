@@ -16,7 +16,7 @@ def get_embedding_model():
     
     return _embedding_model
 
-async def generate_embedding(text: str) -> List[float]:
+def generate_embedding(text: str) -> List[float]:
     """
     Generate 384-dimensional embedding for text.
     
@@ -38,7 +38,7 @@ async def generate_embedding(text: str) -> List[float]:
     # Convert to list for JSON serialization
     return embedding.tolist()
 
-async def generate_embeddings_batch(texts: List[str]) -> List[List[float]]:
+def generate_embeddings_batch(texts: List[str]) -> List[List[float]]:
     """
     Generate embeddings for multiple texts at once (more efficient).
     

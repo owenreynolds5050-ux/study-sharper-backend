@@ -19,32 +19,59 @@ async def process_file(job_data: dict, job_type: JobType):
         supabase.table("files").update({
             "processing_status": "processing"
         }).eq("id", file_id).execute()
-        
-        # Send WebSocket update
+
+        extraction_job_types = {
+            JobType.TEXT_EXTRACTION,
+            JobType.OCR,
+            JobType.AUDIO_TRANSCRIPTION
+        }
+
+        initial_message = "Processing started..."
+        if job_type in extraction_job_types:
+            initial_message = "Extracting text..."
+        elif job_type == JobType.EMBEDDING_GENERATION:
+            initial_message = "Generating embeddings..."
+
         await ws_manager.send_file_update(user_id, file_id, {
             "status": "processing",
-            "message": "Processing started..."
+            "message": initial_message
         })
-        
+
         # Route to appropriate processor
         if job_type == JobType.TEXT_EXTRACTION:
             await process_text_extraction(job_data)
+            await ws_manager.send_file_update(user_id, file_id, {
+                "status": "processing",
+                "message": "Text extracted, generating embeddings..."
+            })
         elif job_type == JobType.OCR:
             await process_ocr(job_data)
+            await ws_manager.send_file_update(user_id, file_id, {
+                "status": "processing",
+                "message": "Text extracted, generating embeddings..."
+            })
         elif job_type == JobType.AUDIO_TRANSCRIPTION:
             await process_audio(job_data)
+            await ws_manager.send_file_update(user_id, file_id, {
+                "status": "processing",
+                "message": "Text extracted, generating embeddings..."
+            })
         elif job_type == JobType.EMBEDDING_GENERATION:
             await process_embedding(job_data)
-        
+
         # Mark as completed
         supabase.table("files").update({
             "processing_status": "completed"
         }).eq("id", file_id).execute()
-        
+
+        success_message = "Processing completed successfully"
+        if job_type == JobType.EMBEDDING_GENERATION:
+            success_message = "Complete"
+
         # Send success update
         await ws_manager.send_file_update(user_id, file_id, {
             "status": "completed",
-            "message": "Processing completed successfully"
+            "message": success_message
         })
         
     except Exception as e:
@@ -79,7 +106,7 @@ async def process_text_extraction(job_data: dict):
     file_data = supabase.storage.from_("file-processing").download(storage_path)
     
     # Extract text using cascading method
-    result = await extract_text_from_file(file_data, file_type, file_id)
+    result = extract_text_from_file(file_data, file_type, file_id)
     
     # Check if PDF has images
     has_images = False
@@ -124,7 +151,7 @@ async def process_ocr(job_data: dict):
     file_data = supabase.storage.from_("file-processing").download(storage_path)
     
     # Run OCR
-    result = await extract_text_with_ocr(file_data, file_id)
+    result = extract_text_with_ocr(file_data, file_id)
     
     # Keep original file for preview (OCR PDFs usually have images)
     supabase.table("files").update({
@@ -178,7 +205,7 @@ async def process_audio(job_data: dict):
 
 async def process_embedding(job_data: dict):
     """Generate embeddings for file content"""
-    from app.services.embeddings import generate_embedding
+    from app.services.embedding_service import generate_embedding
     
     file_id = job_data["file_id"]
     user_id = job_data["user_id"]
@@ -199,7 +226,7 @@ async def process_embedding(job_data: dict):
         text = text[:8000]
     
     # Generate embedding
-    embedding = await generate_embedding(text)
+    embedding = generate_embedding(text)
     
     # Calculate content hash
     content_hash = hashlib.sha256(text.encode()).hexdigest()
