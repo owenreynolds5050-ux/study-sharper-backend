@@ -10,7 +10,7 @@ Handles the complete pipeline for processing uploaded notes:
 
 import logging
 from typing import Optional, Dict, Any
-from app.services.text_extraction import extract_pdf_text, extract_docx_text
+from app.services.text_extraction_v2 import extract_text_from_file
 from io import BytesIO
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ class NoteProcessingError(Exception):
     pass
 
 
-async def process_note_extraction(
+def process_note_extraction(
     note_id: str,
     user_id: str,
     file_path: str,
@@ -72,40 +72,21 @@ async def process_note_extraction(
         
         # Determine file type and extract text
         file_extension = original_filename.lower().split('.')[-1]
-        extracted_text = None
-        extraction_method = None
-        ocr_used = False
         
-        if file_extension == 'pdf':
-            # Try PDF extraction with cascading fallback (PyPDF → pdfminer → OCR)
-            file_size = len(file_data)
-            extracted_text, extraction_method, ocr_used = extract_pdf_text(file_data, file_size)
-            
-            if extracted_text and extraction_method:
-                logger.info(f"Successfully extracted {len(extracted_text)} chars using {extraction_method}")
-                if ocr_used:
-                    logger.info(f"OCR was required for this document")
-            else:
-                # All extraction methods failed
-                raise NoteProcessingError(
-                    "This PDF appears to be encrypted, corrupted, or contains no readable text. "
-                    "Please try a different file or ensure the PDF is not password-protected."
-                )
-                
-        elif file_extension in ['docx', 'doc']:
-            # Try DOCX extraction
-            extracted_text = extract_docx_text(file_data)
-            if extracted_text:
-                extraction_method = 'docx'
-                logger.info(f"Successfully extracted {len(extracted_text)} chars using docx")
-            else:
-                raise NoteProcessingError(
-                    "DOCX text extraction failed. The file may be corrupted or in an unsupported format."
-                )
-        else:
+        # Use unified extraction function
+        result = extract_text_from_file(file_data, file_extension, note_id)
+        
+        extracted_text = result.get('text')
+        extraction_method = result.get('method')
+        ocr_used = extraction_method == 'ocr'
+        
+        if not extracted_text or len(extracted_text.strip()) < 10:
             raise NoteProcessingError(
-                f"Unsupported file type: .{file_extension}. Please upload PDF or DOCX files only."
+                f"Could not extract readable text from {file_extension.upper()} file. "
+                "The file may be encrypted, corrupted, or empty."
             )
+        
+        logger.info(f"Successfully extracted {len(extracted_text)} chars using {extraction_method}")
         
         if not extracted_text:
             raise NoteProcessingError("Text extraction returned empty result")
@@ -168,7 +149,7 @@ async def process_note_extraction(
     return result
 
 
-async def retry_note_processing(
+def retry_note_processing(
     note_id: str,
     user_id: str,
     supabase
@@ -214,7 +195,7 @@ async def retry_note_processing(
             }
         
         # Process the note
-        return await process_note_extraction(
+        return process_note_extraction(
             note_id=note_id,
             user_id=user_id,
             file_path=note['file_path'],

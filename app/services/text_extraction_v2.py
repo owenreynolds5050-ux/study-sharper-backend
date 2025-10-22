@@ -10,7 +10,7 @@ import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-async def extract_text_from_file(file_data: bytes, file_type: str, file_id: str) -> Dict[str, Any]:
+def extract_text_from_file(file_data: bytes, file_type: str, file_id: str) -> Dict[str, Any]:
     """
     Extract text from file using cascading fallback method.
     Priority: Direct extraction → PDF parser → OCR
@@ -38,14 +38,14 @@ async def extract_text_from_file(file_data: bytes, file_type: str, file_id: str)
         }
     
     if file_type == "docx":
-        return await extract_from_docx(file_data)
+        return extract_from_docx(file_data)
     
     if file_type == "pdf":
-        return await extract_from_pdf(file_data, file_id)
+        return extract_from_pdf(file_data, file_id)
     
     raise ValueError(f"Unsupported file type: {file_type}")
 
-async def extract_from_docx(file_data: bytes) -> Dict[str, Any]:
+def extract_from_docx(file_data: bytes) -> Dict[str, Any]:
     """Extract text from DOCX and convert to markdown"""
     doc = Document(io.BytesIO(file_data))
     
@@ -75,7 +75,7 @@ async def extract_from_docx(file_data: bytes) -> Dict[str, Any]:
         "has_images": False
     }
 
-async def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
+def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
     """
     Extract text from PDF using cascading method.
     Tier 1: PyPDF → Tier 2: pdfminer → Tier 3: OCR
@@ -83,7 +83,7 @@ async def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
     
     # Tier 1: Try PyPDF (fastest)
     try:
-        result = await extract_with_pypdf(file_data)
+        result = extract_with_pypdf(file_data)
         if result["text"] and len(result["text"].strip()) > 50:
             print(f"✓ File {file_id}: Extracted with PyPDF")
             return result
@@ -92,7 +92,7 @@ async def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
     
     # Tier 2: Try pdfminer (more robust)
     try:
-        result = await extract_with_pdfminer(file_data)
+        result = extract_with_pdfminer(file_data)
         if result["text"] and len(result["text"].strip()) > 50:
             print(f"✓ File {file_id}: Extracted with pdfminer")
             return result
@@ -102,13 +102,13 @@ async def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
     # Tier 3: Try OCR (slowest, most resource-intensive)
     try:
         print(f"⚠ File {file_id}: Attempting OCR (scanned document)")
-        result = await extract_text_with_ocr(file_data, file_id)
+        result = extract_text_with_ocr(file_data, file_id)
         return result
     except Exception as e:
         print(f"OCR failed for {file_id}: {e}")
         raise ValueError("Could not extract text from PDF. File may be corrupted or empty.")
 
-async def extract_with_pypdf(file_data: bytes) -> Dict[str, Any]:
+def extract_with_pypdf(file_data: bytes) -> Dict[str, Any]:
     """Extract text using PyPDF"""
     pdf = PdfReader(io.BytesIO(file_data))
     
@@ -137,7 +137,7 @@ async def extract_with_pypdf(file_data: bytes) -> Dict[str, Any]:
         "has_images": has_images
     }
 
-async def extract_with_pdfminer(file_data: bytes) -> Dict[str, Any]:
+def extract_with_pdfminer(file_data: bytes) -> Dict[str, Any]:
     """Extract text using pdfminer.six"""
     text = pdfminer_extract(io.BytesIO(file_data))
     normalized = normalize_to_markdown(text)
@@ -152,7 +152,7 @@ async def extract_with_pdfminer(file_data: bytes) -> Dict[str, Any]:
         "has_images": has_images
     }
 
-async def extract_text_with_ocr(file_data: bytes, file_id: str) -> Dict[str, Any]:
+def extract_text_with_ocr(file_data: bytes, file_id: str) -> Dict[str, Any]:
     """
     Extract text from scanned PDF using OCR.
     MEMORY INTENSIVE - Limited to 2 concurrent jobs by job queue.

@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from app.core.auth import get_current_user, get_supabase_client
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Security model:
 # - get_current_user() validates the JWT token and extracts user_id
@@ -272,21 +275,31 @@ async def delete_note(
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client)
 ):
+    """
+    Delete a note and its associated file.
+    Works even if note is currently being processed - background task will detect deletion and cancel.
+    """
     try:
-        # First, get the note to find the file path
-        response = supabase.table("notes").select("file_path").eq("id", note_id).eq("user_id", user_id).execute()
+        # First, get the note to find the file path and status
+        response = supabase.table("notes").select("file_path, processing_status").eq("id", note_id).eq("user_id", user_id).execute()
         
         if not response.data or len(response.data) == 0:
             raise HTTPException(status_code=404, detail="Note not found")
         
         note = response.data[0]
+        
+        # Delete the note from database FIRST
+        # This allows background processing to detect deletion and cancel
+        delete_response = supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
 
-        # If there's a file, delete it from storage
+        # If there's a file, delete it from storage (even if processing)
         if note and note.get("file_path"):
-            supabase.storage.from_("notes-pdfs").remove([note["file_path"]])
+            try:
+                supabase.storage.from_("notes-pdfs").remove([note["file_path"]])
+            except Exception as storage_error:
+                # Log but don't fail - file might not exist or already deleted
+                logger.warning(f"Failed to delete file from storage: {storage_error}")
 
-        # Then, delete the note from the database
-        response = supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
         return {"success": True}
     except HTTPException:
         raise

@@ -23,10 +23,21 @@ class ProcessResponse(BaseModel):
     message: str
     note_id: str
 
-async def background_process_note(note_id: str, user_id: str, file_path: str, original_filename: str, supabase):
+class OcrCheckResponse(BaseModel):
+    needs_ocr: bool
+    file_type: str
+    message: Optional[str] = None
+
+def background_process_note(note_id: str, user_id: str, file_path: str, original_filename: str, supabase):
     """Background task to process note extraction"""
     try:
-        result = await process_note_extraction(
+        # Check if note still exists (user may have deleted it)
+        check_response = supabase.table("notes").select("id").eq("id", note_id).eq("user_id", user_id).execute()
+        if not check_response.data or len(check_response.data) == 0:
+            logger.info(f"Note {note_id} was deleted, cancelling processing")
+            return
+        
+        result = process_note_extraction(
             note_id=note_id,
             user_id=user_id,
             file_path=file_path,
@@ -39,6 +50,71 @@ async def background_process_note(note_id: str, user_id: str, file_path: str, or
             logger.error(f"Background processing failed for note {note_id}: {result.get('error_message')}")
     except Exception as e:
         logger.exception(f"Background processing error for note {note_id}: {e}")
+
+@router.post("/check-ocr", response_model=OcrCheckResponse)
+async def check_if_ocr_needed(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Check if a file will require OCR processing.
+    This allows frontend to show premium gate before upload.
+    """
+    try:
+        # Only check PDFs (DOCX doesn't need OCR)
+        if file.content_type != "application/pdf":
+            return OcrCheckResponse(
+                needs_ocr=False,
+                file_type=file.content_type or "unknown",
+                message="File type does not require OCR"
+            )
+        
+        # Read first 500KB to check if PDF has extractable text
+        buffer = await file.read(512000)  # 500KB sample
+        await file.seek(0)  # Reset file pointer for potential upload
+        
+        # Try quick text extraction with PyPDF
+        from pypdf import PdfReader
+        from io import BytesIO
+        
+        try:
+            pdf = PdfReader(BytesIO(buffer))
+            
+            # Check first 3 pages for text
+            text_found = False
+            pages_to_check = min(3, len(pdf.pages))
+            
+            for i in range(pages_to_check):
+                page_text = pdf.pages[i].extract_text()
+                if page_text and len(page_text.strip()) > 50:
+                    text_found = True
+                    break
+            
+            if text_found:
+                return OcrCheckResponse(
+                    needs_ocr=False,
+                    file_type="application/pdf",
+                    message="PDF contains extractable text"
+                )
+            else:
+                return OcrCheckResponse(
+                    needs_ocr=True,
+                    file_type="application/pdf",
+                    message="PDF appears to be scanned and requires OCR"
+                )
+                
+        except Exception as e:
+            logger.warning(f"Could not analyze PDF for OCR check: {e}")
+            # If we can't determine, assume OCR might be needed
+            return OcrCheckResponse(
+                needs_ocr=True,
+                file_type="application/pdf",
+                message="Could not determine if OCR is needed"
+            )
+            
+    except Exception as e:
+        logger.exception(f"Error checking OCR requirement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upload")
 async def upload_file(
