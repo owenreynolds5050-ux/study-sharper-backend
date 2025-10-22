@@ -2,6 +2,7 @@
 import io
 import re
 import gc
+import psutil
 from typing import Dict, Any
 from pypdf import PdfReader
 from pdfminer.high_level import extract_text as pdfminer_extract
@@ -170,17 +171,18 @@ def extract_text_with_ocr(file_data: bytes, file_id: str) -> Dict[str, Any]:
             fmt='jpeg',  # Less memory than PNG
             thread_count=1,  # Single-threaded to limit memory
             first_page=1,
-            last_page=20  # Max 20 pages
+            last_page=10  # Max 10 pages
         )
         
-        if len(images) > 20:
-            print(f"⚠ File {file_id}: Truncated to 20 pages for OCR")
-            images = images[:20]
+        if len(images) > 10:
+            print(f"⚠ File {file_id}: Truncated to 10 pages for OCR")
+            images = images[:10]
         
         text_parts = []
+        memory_limit_hit = False
         
-        # Process in batches of 5 to manage memory
-        batch_size = 5
+        # Process in batches of 2 to manage memory
+        batch_size = 2
         for i in range(0, len(images), batch_size):
             batch = images[i:i + batch_size]
             
@@ -193,11 +195,21 @@ def extract_text_with_ocr(file_data: bytes, file_id: str) -> Dict[str, Any]:
                 except Exception as e:
                     print(f"OCR failed on page {page_num}: {e}")
                     text_parts.append(f"--- Page {page_num} ---\n[OCR failed]")
+                finally:
+                    del image
+                    gc.collect()
+                    memory_usage = psutil.virtual_memory().percent
+                    if memory_usage > 80:
+                        print(f"⚠ File {file_id}: Stopping OCR early due to high memory usage ({memory_usage:.1f}% used)")
+                        memory_limit_hit = True
+                        break
             
             # Clear batch from memory
             del batch
             gc.collect()
-        
+            if memory_limit_hit:
+                break
+
         # Clear all images
         del images
         gc.collect()
