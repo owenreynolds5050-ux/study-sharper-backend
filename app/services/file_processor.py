@@ -6,6 +6,8 @@ from app.services.job_queue import JobType
 import traceback
 import hashlib
 
+# Cache buster: 2025-10-22-20-30
+
 async def process_file(job_data: dict, job_type: JobType):
     """
     Main file processing function called by job queue.
