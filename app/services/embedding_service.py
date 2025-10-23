@@ -1,6 +1,7 @@
 # app/services/embedding_service.py
 from sentence_transformers import SentenceTransformer
-from typing import List
+from typing import List, Tuple, Optional
+import numpy as np
 
 # Initialize embedding model (singleton pattern)
 _embedding_model = None
@@ -58,3 +59,59 @@ def generate_embeddings_batch(texts: List[str]) -> List[List[float]]:
     embeddings = model.encode(texts, convert_to_numpy=True, batch_size=32)
     
     return [emb.tolist() for emb in embeddings]
+
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """Split text into overlapping character chunks."""
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size must be greater than overlap")
+
+    if not text:
+        return []
+
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+
+    chunks: List[str] = []
+    step = chunk_size - overlap
+    start = 0
+    text_length = len(cleaned)
+
+    while start < text_length:
+        end = min(text_length, start + chunk_size)
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= text_length:
+            break
+        start += step
+
+    return chunks
+
+
+def average_embeddings(embeddings: List[List[float]]) -> List[float]:
+    """Compute element-wise average for a list of embeddings."""
+    if not embeddings:
+        raise ValueError("Cannot average empty embedding list")
+
+    array = np.array(embeddings, dtype=float)
+    return array.mean(axis=0).tolist()
+
+
+def prepare_chunk_embeddings(
+    text: str,
+    chunk_size: int = 1000,
+    overlap: int = 200
+) -> Tuple[List[str], List[List[float]], Optional[List[float]]]:
+    """Generate chunk-level embeddings and aggregate embedding for text."""
+    chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+    if not chunks:
+        return [], [], None
+
+    embeddings = generate_embeddings_batch(chunks)
+    if not embeddings:
+        return [], [], None
+
+    aggregated = average_embeddings(embeddings)
+    return chunks, embeddings, aggregated

@@ -5,6 +5,7 @@ from app.core.websocket import ws_manager
 from app.services.job_queue import JobType
 import traceback
 import hashlib
+import uuid
 
 # Cache buster: 2025-10-22-20-30
 
@@ -207,7 +208,7 @@ async def process_audio(job_data: dict):
 
 async def process_embedding(job_data: dict):
     """Generate embeddings for file content"""
-    from app.services.embedding_service import generate_embedding
+    
     
     file_id = job_data["file_id"]
     user_id = job_data["user_id"]
@@ -220,33 +221,64 @@ async def process_embedding(job_data: dict):
     
     file_data = file_result.data[0]
     
-    # Combine title and content
-    text = f"{file_data['title']}\n\n{file_data['content'] or ''}"
-    
-    # Limit to 8000 characters for performance
-    if len(text) > 8000:
-        text = text[:8000]
-    
-    # Generate embedding
-    embedding = generate_embedding(text)
-    
-    # Calculate content hash
-    content_hash = hashlib.sha256(text.encode()).hexdigest()
-    
-    # Check if embedding exists
+    store_file_embeddings(
+        file_id=file_id,
+        user_id=user_id,
+        title=file_data['title'],
+        content=file_data['content']
+    )
+
+
+def store_file_embeddings(file_id: str, user_id: str, title: str, content: str):
+    """Chunk text, generate embeddings, and persist chunk + aggregated vectors."""
+    from app.services.embedding_service import prepare_chunk_embeddings
+    full_text = f"{title}\n\n{content or ''}".strip()
+
+    # Clear existing chunks to avoid duplicates
+    supabase.table("file_chunks").delete().eq("file_id", file_id).execute()
+
+    if not full_text:
+        # Remove any aggregate embedding when content is empty
+        supabase.table("file_embeddings").delete().eq("file_id", file_id).execute()
+        return
+
+    chunks, embeddings, aggregated = prepare_chunk_embeddings(full_text, chunk_size=1000, overlap=200)
+
+    if not chunks or not embeddings:
+        supabase.table("file_embeddings").delete().eq("file_id", file_id).execute()
+        return
+
+    # Insert chunk records in batches
+    chunk_rows = []
+    for index, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
+        chunk_rows.append({
+            "chunk_id": str(uuid.uuid4()),
+            "file_id": file_id,
+            "user_id": user_id,
+            "chunk_index": index,
+            "text": chunk_text,
+            "embedding": embedding
+        })
+
+    batch_size = 50
+    for start in range(0, len(chunk_rows), batch_size):
+        batch = chunk_rows[start:start + batch_size]
+        supabase.table("file_chunks").insert(batch).execute()
+
+    aggregated_embedding = aggregated or embeddings[0]
+    content_hash = hashlib.sha256(full_text.encode()).hexdigest()
+
     existing = supabase.table("file_embeddings").select("id").eq("file_id", file_id).execute()
-    
+
     if existing.data:
-        # Update existing
         supabase.table("file_embeddings").update({
-            "embedding": embedding,
+            "embedding": aggregated_embedding,
             "content_hash": content_hash
         }).eq("file_id", file_id).execute()
     else:
-        # Insert new
         supabase.table("file_embeddings").insert({
             "file_id": file_id,
             "user_id": user_id,
-            "embedding": embedding,
+            "embedding": aggregated_embedding,
             "content_hash": content_hash
         }).execute()

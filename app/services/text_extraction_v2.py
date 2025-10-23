@@ -3,7 +3,7 @@ import io
 import re
 import gc
 import psutil
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from pypdf import PdfReader
 from pdfminer.high_level import extract_text as pdfminer_extract
 from docx import Document
@@ -43,6 +43,9 @@ def extract_text_from_file(file_data: bytes, file_type: str, file_id: str) -> Di
     
     if file_type == "pdf":
         return extract_from_pdf(file_data, file_id)
+
+    if file_type in {"png", "jpg", "jpeg"}:
+        return extract_from_image(file_data, file_id)
     
     raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -82,9 +85,45 @@ def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
     Tier 1: PyPDF → Tier 2: pdfminer → Tier 3: OCR
     """
     
+    pdf_reader: Optional[PdfReader] = None
+    total_pages = 0
+    sample_char_count = 0
+    corrupted_pages: List[int] = []
+
+    try:
+        pdf_reader = PdfReader(io.BytesIO(file_data))
+        total_pages = len(pdf_reader.pages)
+        print(f"ℹ File {file_id}: PDF contains {total_pages} pages")
+
+        pages_to_sample = min(5, total_pages)
+        for page_index in range(pages_to_sample):
+            try:
+                page_text = pdf_reader.pages[page_index].extract_text() or ""
+                sample_char_count += len(page_text.strip())
+            except Exception as page_error:
+                corrupted_pages.append(page_index + 1)
+                print(f"⚠ File {file_id}: Failed to read page {page_index + 1} during scan detection ({page_error})")
+    except Exception as reader_error:
+        print(f"⚠ File {file_id}: Could not initialize PyPDF reader ({reader_error})")
+        pdf_reader = None
+
+    if corrupted_pages:
+        page_list = ", ".join(str(page) for page in corrupted_pages)
+        print(f"⚠ File {file_id}: Encountered corrupted pages during pre-scan: {page_list}")
+
+    is_scanned = total_pages > 0 and sample_char_count < 100
+
+    if is_scanned:
+        print(f"⚠ File {file_id}: Detected potential scanned document (sample char count {sample_char_count}). Routing to OCR.")
+        try:
+            return extract_text_with_ocr(file_data, file_id)
+        except Exception as ocr_error:
+            print(f"OCR failed for {file_id}: {ocr_error}")
+            raise ValueError("Could not extract text from PDF via OCR. File may be corrupted or empty.")
+
     # Tier 1: Try PyPDF (fastest)
     try:
-        result = extract_with_pypdf(file_data)
+        result = extract_with_pypdf(file_data, pdf_reader)
         if result["text"] and len(result["text"].strip()) > 50:
             print(f"✓ File {file_id}: Extracted with PyPDF")
             return result
@@ -109,29 +148,39 @@ def extract_from_pdf(file_data: bytes, file_id: str) -> Dict[str, Any]:
         print(f"OCR failed for {file_id}: {e}")
         raise ValueError("Could not extract text from PDF. File may be corrupted or empty.")
 
-def extract_with_pypdf(file_data: bytes) -> Dict[str, Any]:
+def extract_with_pypdf(file_data: bytes, pdf_reader: Optional[PdfReader] = None) -> Dict[str, Any]:
     """Extract text using PyPDF"""
-    pdf = PdfReader(io.BytesIO(file_data))
-    
+    pdf = pdf_reader or PdfReader(io.BytesIO(file_data))
+
     text_parts = []
     has_images = False
-    
-    for page in pdf.pages:
-        # Check for images
-        if '/XObject' in page['/Resources']:
-            xobject = page['/Resources']['/XObject'].get_object()
-            for obj in xobject:
-                if xobject[obj]['/Subtype'] == '/Image':
-                    has_images = True
-        
-        # Extract text
-        text = page.extract_text()
-        if text:
-            text_parts.append(text)
-    
-    combined_text = "\n\n".join(text_parts)
-    normalized = normalize_to_markdown(combined_text)
-    
+    corrupted_pages: List[int] = []
+
+    for index, page in enumerate(pdf.pages, start=1):
+        try:
+            # Check for images where possible
+            resources = page.get('/Resources')
+            if resources and '/XObject' in resources:
+                xobject = resources['/XObject'].get_object()
+                for obj in xobject:
+                    subtype = xobject[obj].get('/Subtype')
+                    if subtype == '/Image':
+                        has_images = True
+
+            text = page.extract_text() or ""
+            if text:
+                text_parts.append(text)
+        except Exception as page_error:
+            corrupted_pages.append(index)
+            print(f"⚠ PyPDF extraction failed on page {index}: {page_error}")
+
+    if corrupted_pages:
+        page_list = ", ".join(str(page) for page in corrupted_pages)
+        print(f"⚠ Encountered corrupted pages during PyPDF extraction: {page_list}")
+
+    combined_text = "\n".join(text_parts)
+    normalized = convert_pdf_text_to_markdown(combined_text)
+
     return {
         "text": normalized,
         "method": "pypdf",
@@ -141,7 +190,7 @@ def extract_with_pypdf(file_data: bytes) -> Dict[str, Any]:
 def extract_with_pdfminer(file_data: bytes) -> Dict[str, Any]:
     """Extract text using pdfminer.six"""
     text = pdfminer_extract(io.BytesIO(file_data))
-    normalized = normalize_to_markdown(text)
+    normalized = convert_pdf_text_to_markdown(text)
     
     # Check if PDF likely has images (pdfminer doesn't easily detect this)
     # Simple heuristic: if text is very sparse, likely has images
@@ -247,3 +296,97 @@ def normalize_to_markdown(text: str) -> str:
     text = text.strip()
     
     return text
+
+
+def convert_pdf_text_to_markdown(text: str) -> str:
+    """Convert raw PDF-extracted text into markdown while preserving structure."""
+    lines = text.splitlines()
+    processed: List[str] = []
+    table_rows: List[List[str]] = []
+
+    def flush_table():
+        nonlocal table_rows
+        if not table_rows:
+            return
+        max_cols = max(len(row) for row in table_rows)
+        normalized_rows = [
+            row + [""] * (max_cols - len(row))
+            for row in table_rows
+        ]
+        header = normalized_rows[0]
+        processed.append("| " + " | ".join(cell.strip() for cell in header) + " |")
+        processed.append("| " + " | ".join("---" for _ in header) + " |")
+        for row in normalized_rows[1:]:
+            processed.append("| " + " | ".join(cell.strip() for cell in row) + " |")
+        table_rows = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+
+        if not line.strip():
+            flush_table()
+            processed.append("")
+            continue
+
+        bullet_match = re.match(r"^\s*[•◦\-–—]\s+(.*)", line)
+        ordered_match = re.match(r"^\s*(\d+)[\.\)]\s+(.*)", line)
+
+        if bullet_match:
+            flush_table()
+            processed.append(f"- {bullet_match.group(1).strip()}")
+            continue
+
+        if ordered_match:
+            flush_table()
+            processed.append(f"{ordered_match.group(1)}. {ordered_match.group(2).strip()}")
+            continue
+
+        if "\t" in line or re.search(r"\s{3,}", line):
+            # Potential table row
+            columns = [col.strip() for col in re.split(r"\t+|\s{3,}", line) if col.strip()]
+            if len(columns) >= 2:
+                table_rows.append(columns)
+                continue
+
+        flush_table()
+
+        clean_line = line.strip()
+        if clean_line and clean_line.isupper() and len(clean_line) <= 60:
+            processed.append(f"## {clean_line.title()}")
+        else:
+            processed.append(clean_line)
+
+    flush_table()
+    markdown = "\n".join(processed)
+    return normalize_to_markdown(markdown)
+
+
+def extract_from_image(file_data: bytes, file_id: str) -> Dict[str, Any]:
+    """Extract text from image files using OCR."""
+    try:
+        with Image.open(io.BytesIO(file_data)) as image:
+            # Ensure image is in a format suitable for OCR
+            if image.mode not in ("L", "RGB"):
+                image = image.convert("RGB")
+
+            text = pytesseract.image_to_string(image)
+    except Exception as image_error:
+        raise ValueError(f"Failed to process image for OCR: {image_error}")
+
+    normalized = normalize_to_markdown(text)
+    char_count = len(normalized.strip())
+
+    if char_count < 50:
+        print(f"⚠ File {file_id}: Image OCR produced limited text ({char_count} chars)")
+        return {
+            "text": normalized,
+            "method": "image_no_text",
+            "has_images": True
+        }
+
+    print(f"✓ File {file_id}: Extracted {char_count} chars via image OCR")
+    return {
+        "text": normalized,
+        "method": "ocr",
+        "has_images": True
+    }

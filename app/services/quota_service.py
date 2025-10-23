@@ -6,16 +6,18 @@ from datetime import date
 # Quota limits
 FREE_USER_LIMITS = {
     "daily_uploads": 50,  # 50 files per day
-    "storage_bytes": 1024 * 1024 * 1024,  # 1GB total storage
-    "max_file_size": 10 * 1024 * 1024,  # 10MB per file
-    "max_audio_size": 25 * 1024 * 1024,  # 25MB per audio file
+    "storage_bytes": 200 * 1024 * 1024,  # 200MB total storage
+    "max_file_size": 50 * 1024 * 1024,  # 50MB per file
+    "max_audio_size": 50 * 1024 * 1024,  # 50MB per audio file
+    "max_files": 10,
 }
 
 PREMIUM_USER_LIMITS = {
     "daily_uploads": 200,  # 200 files per day
-    "storage_bytes": 10 * 1024 * 1024 * 1024,  # 10GB total storage
-    "max_file_size": 50 * 1024 * 1024,  # 50MB per file
-    "max_audio_size": 100 * 1024 * 1024,  # 100MB per audio file
+    "storage_bytes": 5 * 1024 * 1024 * 1024,  # 5GB total storage
+    "max_file_size": 500 * 1024 * 1024,  # 500MB per file
+    "max_audio_size": 500 * 1024 * 1024,  # 500MB per audio file
+    "max_files": 100,
 }
 
 async def get_or_create_quota(user_id: str) -> dict:
@@ -72,6 +74,14 @@ async def check_upload_quota(user_id: str, file_size: int = 0) -> dict:
             status_code=507,
             detail=f"Storage limit exceeded. Used: {used_mb:.1f}MB / {limit_mb:.1f}MB"
         )
+
+    # Check total files limit
+    max_files = limits.get("max_files")
+    if max_files is not None and quota["total_files"] >= max_files:
+        raise HTTPException(
+            status_code=409,
+            detail=f"File limit reached ({max_files} files). Delete files or upgrade to add more."
+        )
     
     return {
         "allowed": True,
@@ -124,7 +134,8 @@ async def get_quota_info(user_id: str) -> dict:
         },
         "total_files": quota["total_files"],
         "max_file_size_bytes": limits["max_file_size"],
-        "max_audio_size_bytes": limits["max_audio_size"]
+        "max_audio_size_bytes": limits["max_audio_size"],
+        "max_files_allowed": limits.get("max_files"),
     }
 
 def get_file_size_limit(is_premium: bool, file_type: str) -> int:

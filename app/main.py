@@ -33,6 +33,7 @@ from app.core.auth import get_current_user_from_token
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from app.api import file_chat
 import uuid
 import asyncio
 import json
@@ -187,6 +188,7 @@ app.include_router(folders.router, prefix="/api")
 app.include_router(flashcards.router, prefix="/api")
 app.include_router(ai_chat.router, prefix="/api")
 app.include_router(file_upload_router, prefix="/api", tags=["upload"])
+app.include_router(file_chat.router, prefix="/api", tags=["file_chat"])
 
 @app.get("/")
 def read_root():

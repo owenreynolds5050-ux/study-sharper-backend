@@ -151,7 +151,7 @@ async def process_file_immediately(file_id: str, user_id: str, file_data: bytes,
     Used for text files (PDF, DOCX, TXT, MD) that process quickly.
     """
     from app.services.text_extraction_v2 import extract_text_from_file
-    from app.services.embedding_service import generate_embedding
+    from app.services.file_processor import store_file_embeddings
     import hashlib
     
     try:
@@ -190,27 +190,17 @@ async def process_file_immediately(file_id: str, user_id: str, file_data: bytes,
             "processing_status": "completed"
         }).eq("id", file_id).execute()
         
-        # Generate embedding (quick, do it now)
+        # Generate chunk + aggregated embeddings synchronously
         try:
-            file_result = supabase.table("files").select("title, content").eq("id", file_id).execute()
-            if file_result.data:
-                file_record = file_result.data[0]
-                text = f"{file_record['title']}\n\n{file_record['content'] or ''}"
-                
-                # Limit to 8000 characters
-                if len(text) > 8000:
-                    text = text[:8000]
-                
-                embedding = generate_embedding(text)
-                content_hash = hashlib.sha256(text.encode()).hexdigest()
-                
-                # Insert embedding
-                supabase.table("file_embeddings").insert({
-                    "file_id": file_id,
-                    "user_id": user_id,
-                    "embedding": embedding,
-                    "content_hash": content_hash
-                }).execute()
+            refreshed = supabase.table("files").select("title, content").eq("id", file_id).execute()
+            if refreshed.data:
+                record = refreshed.data[0]
+                store_file_embeddings(
+                    file_id=file_id,
+                    user_id=user_id,
+                    title=record.get("title", ""),
+                    content=record.get("content", "")
+                )
         except Exception as e:
             print(f"Warning: Embedding generation failed for {file_id}: {e}")
             # Don't fail the whole process if embedding fails

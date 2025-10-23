@@ -166,6 +166,70 @@ async def retrieve_relevant_notes(
             return []
 
 
+async def retrieve_relevant_file_chunks(
+    user_id: str,
+    query: str,
+    supabase,
+    top_k: int = 5,
+    file_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Find the most relevant file chunks for a user query."""
+    try:
+        embedding_result = get_embedding_for_text(query)
+        query_embedding = embedding_result["embedding"]
+
+        params = {
+            "query_embedding": query_embedding,
+            "match_count": top_k,
+            "p_user_id": user_id
+        }
+
+        if file_ids:
+            params["p_file_ids"] = file_ids
+
+        response = supabase.rpc("search_file_chunks", params).execute()
+
+        chunks = response.data or []
+
+        formatted = []
+        for index, chunk in enumerate(chunks[:top_k]):
+            chunk_text = chunk.get("text", "").strip()
+            file_title = chunk.get("file_title") or chunk.get("title") or "Untitled"
+            similarity = chunk.get("similarity") or chunk.get("score")
+            formatted.append({
+                "rank": index + 1,
+                "file_id": chunk.get("file_id"),
+                "chunk_id": chunk.get("chunk_id"),
+                "file_title": file_title,
+                "text": chunk_text,
+                "similarity": similarity
+            })
+
+        if not formatted:
+            return {
+                "chunks": [],
+                "system_message": "You have access to these relevant notes:\nNo relevant notes found."
+            }
+
+        message_lines = ["You have access to these relevant notes:"]
+        for item in formatted:
+            message_lines.append(f"[{item['rank']}] {item['file_title']}\n{item['text']}")
+
+        system_message = "\n".join(message_lines)
+
+        return {
+            "chunks": formatted,
+            "system_message": system_message
+        }
+
+    except Exception as error:
+        logger.error(f"Error retrieving file chunks: {error}")
+        return {
+            "chunks": [],
+            "system_message": "You have access to these relevant notes:\nNo relevant notes found."
+        }
+
+
 # ============================================================================
 # INTENT DETECTION & SUBJECT EXTRACTION
 # ============================================================================
