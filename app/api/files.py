@@ -106,14 +106,13 @@ async def create_file(
     file_data: FileCreate,
     user_id: str = Depends(get_current_user)
 ):
-    """Create a new manual note/file."""
+    """Create a new manual text note (no file upload)."""
     file_type = (file_data.file_type or "md").lower()
 
     if file_type not in {"md", "txt"}:
         raise HTTPException(400, "Unsupported file type for manual creation")
 
     content = file_data.content or ""
-    file_size_bytes = len(content.encode("utf-8"))
     file_id = str(uuid.uuid4())
 
     record = {
@@ -123,30 +122,18 @@ async def create_file(
         "title": file_data.title.strip() or "Untitled",
         "file_type": file_type,
         "content": content,
-        "extracted_text": content,  # For consistency with notes table
-        "file_size_bytes": file_size_bytes,
+        "extracted_text": content,
         "processing_status": "completed",
         "extraction_method": "manual",
-        "original_filename": f"{(file_data.title.strip() or 'note')}.{file_type}",
-        "edited_manually": True,
     }
 
     try:
         result = supabase.table("files").insert(record).execute()
     except Exception as exc:
-        # Log the full error for debugging
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Error creating note: {error_details}")
         raise HTTPException(500, f"Failed to create note: {str(exc)}")
 
     if not result.data:
         raise HTTPException(500, "Failed to create note")
-
-    # Update quota / counts
-    from app.services.quota_service import increment_upload_count
-
-    await increment_upload_count(user_id, file_size_bytes)
 
     # Trigger embedding generation for contentful notes
     if content:

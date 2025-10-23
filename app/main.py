@@ -7,7 +7,6 @@ from slowapi.errors import RateLimitExceeded
 from app.api import chat, embeddings, folders, flashcards, ai_chat
 # Notes API removed - consolidated into files API
 from app.api.files import router as files_router
-from app.api.file_upload import router as file_upload_router
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
 from app.agents.orchestrator import MainOrchestrator
@@ -187,7 +186,6 @@ app.include_router(embeddings.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(flashcards.router, prefix="/api")
 app.include_router(ai_chat.router, prefix="/api")
-app.include_router(file_upload_router, prefix="/api", tags=["upload"])
 app.include_router(file_chat.router, prefix="/api", tags=["file_chat"])
 
 @app.get("/")

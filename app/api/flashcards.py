@@ -121,13 +121,13 @@ async def generate_flashcards(
         if request.difficulty not in ["easy", "medium", "hard"]:
             raise HTTPException(status_code=400, detail="Invalid difficulty level")
         
-        # Fetch notes content
-        notes_response = supabase.table("notes").select(
+        # Fetch files content
+        notes_response = supabase.table("files").select(
             "id, title, content, extracted_text"
         ).in_("id", request.note_ids).eq("user_id", user_id).execute()
         
         if not notes_response.data:
-            raise HTTPException(status_code=404, detail="No notes found")
+            raise HTTPException(status_code=404, detail="No files found")
         
         # Combine note content
         combined_text = []

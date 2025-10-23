@@ -36,13 +36,13 @@ async def generate_embedding(
     Generate and store embedding for a single note.
     """
     try:
-        # Fetch the note
-        response = supabase.table("notes").select(
+        # Fetch the file
+        response = supabase.table("files").select(
             "id, user_id, title, content, extracted_text"
         ).eq("id", request.noteId).eq("user_id", user_id).single().execute()
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="Note not found")
+            raise HTTPException(status_code=404, detail="File not found")
         
         note = response.data
         
@@ -123,13 +123,13 @@ async def generate_batch_embeddings(
     Generate embeddings for multiple notes.
     """
     try:
-        # Fetch all notes
-        response = supabase.table("notes").select(
+        # Fetch all files
+        response = supabase.table("files").select(
             "id, user_id, title, content, extracted_text"
         ).in_("id", request.noteIds).eq("user_id", user_id).execute()
         
         if not response.data:
-            raise HTTPException(status_code=404, detail="No notes found")
+            raise HTTPException(status_code=404, detail="No files found")
         
         results = {
             "success": [],
@@ -243,13 +243,13 @@ async def get_related_notes(
     Find notes related to a specific note.
     """
     try:
-        # Verify note belongs to user
-        note_response = supabase.table("notes").select("id").eq(
+        # Verify file belongs to user
+        note_response = supabase.table("files").select("id").eq(
             "id", note_id
         ).eq("user_id", user_id).execute()
         
         if not note_response.data:
-            raise HTTPException(status_code=404, detail="Note not found")
+            raise HTTPException(status_code=404, detail="File not found")
         
         # Find related notes
         response = supabase.rpc(
