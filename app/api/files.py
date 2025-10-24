@@ -194,8 +194,6 @@ async def delete_file(
     user_id: str = Depends(get_current_user)
 ):
     """Delete a file and its associated storage"""
-    from app.services.quota_service import decrement_file_count
-    
     # Get file info
     file_result = supabase.table("files").select("file_size_bytes, file_path").eq("id", file_id).eq("user_id", user_id).execute()
     
@@ -216,9 +214,6 @@ async def delete_file(
     
     if not delete_result.data:
         raise HTTPException(500, "Failed to delete file from database")
-    
-    # Update quota
-    await decrement_file_count(user_id, file_data.get("file_size_bytes", 0))
     
     return {"success": True}
 
