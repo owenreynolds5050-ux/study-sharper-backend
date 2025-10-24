@@ -164,7 +164,6 @@ async def update_file(
         updates["folder_id"] = update_data.folder_id
     if update_data.content is not None:
         updates["content"] = update_data.content
-        updates["extracted_text"] = update_data.content  # Keep both in sync
         updates["edited_manually"] = True
         
         # If content changed, re-generate embedding
