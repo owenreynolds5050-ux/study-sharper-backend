@@ -132,15 +132,18 @@ async def create_file(
     if not result.data:
         raise HTTPException(500, "Failed to create note")
 
-    # Trigger embedding generation for contentful notes
+    # Trigger embedding generation for contentful notes (non-blocking)
     if content:
-        from app.services.job_queue import job_queue, JobType, JobPriority
-
-        await job_queue.add_job(
-            job_type=JobType.EMBEDDING_GENERATION,
-            job_data={"file_id": file_id, "user_id": user_id},
-            priority=JobPriority.NORMAL,
-        )
+        try:
+            from app.services.job_queue import job_queue, JobType, JobPriority
+            await job_queue.add_job(
+                job_type=JobType.EMBEDDING_GENERATION,
+                job_data={"file_id": file_id, "user_id": user_id},
+                priority=JobPriority.NORMAL,
+            )
+        except Exception as e:
+            # Log but don't fail the request - embedding can be generated later
+            print(f"Warning: Failed to queue embedding generation: {str(e)}")
 
     return {"file": result.data[0]}
 
