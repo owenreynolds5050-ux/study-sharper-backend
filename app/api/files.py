@@ -122,9 +122,6 @@ async def create_file(
         "title": file_data.title.strip() or "Untitled",
         "file_type": file_type,
         "content": content,
-        "extracted_text": content,
-        "processing_status": "completed",
-        "extraction_method": "manual",
     }
 
     try:
