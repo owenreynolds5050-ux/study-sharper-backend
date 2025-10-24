@@ -145,7 +145,7 @@ async def create_file(
             # Log but don't fail the request - embedding can be generated later
             print(f"Warning: Failed to queue embedding generation: {str(e)}")
 
-    return {"file": result.data[0]}
+    return result.data[0]
 
 @router.patch("/files/{file_id}")
 async def update_file(
