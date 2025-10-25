@@ -28,6 +28,7 @@ class Folder(BaseModel):
     parent_folder_id: Optional[str] = None
     depth: int = 0
     created_at: str
+    updated_at: Optional[str] = None
 
 @router.get("/folders", response_model=List[Folder])
 async def get_folders(
