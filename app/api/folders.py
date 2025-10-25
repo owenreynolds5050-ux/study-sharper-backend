@@ -13,16 +13,20 @@ router = APIRouter()
 class FolderCreate(BaseModel):
     name: str
     color: str
+    parent_folder_id: Optional[str] = None
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
+    parent_folder_id: Optional[str] = None
 
 class Folder(BaseModel):
     id: str
     user_id: str
     name: str
     color: str
+    parent_folder_id: Optional[str] = None
+    depth: int = 0
     created_at: str
 
 @router.get("/folders", response_model=List[Folder])
@@ -94,6 +98,7 @@ async def create_folder(
 ):
     """
     Create a new folder for the authenticated user.
+    Supports folder nesting with parent_folder_id.
     """
     try:
         logger.info(f"Creating folder '{folder.name}' for user: {user_id}")
@@ -105,10 +110,39 @@ async def create_folder(
                 detail="Invalid color format. Use hex format like #FF5733"
             )
         
+        # Calculate depth based on parent folder
+        depth = 0
+        if folder.parent_folder_id:
+            # Fetch parent folder to get its depth
+            parent_response = supabase.table("note_folders")\
+                .select("depth")\
+                .eq("id", folder.parent_folder_id)\
+                .eq("user_id", user_id)\
+                .single()\
+                .execute()
+            
+            if not parent_response.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Parent folder not found"
+                )
+            
+            parent_depth = parent_response.data.get("depth", 0)
+            depth = parent_depth + 1
+            
+            # Enforce max depth of 2
+            if depth > 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot create folder: maximum nesting depth is 2 (Folder -> Subfolder -> File)"
+                )
+        
         response = supabase.table("note_folders").insert({
             "user_id": user_id,
             "name": folder.name,
-            "color": folder.color
+            "color": folder.color,
+            "parent_folder_id": folder.parent_folder_id,
+            "depth": depth
         }).execute()
         
         if not response.data:
@@ -160,6 +194,41 @@ async def update_folder(
                     detail="Invalid color format. Use hex format like #FF5733"
                 )
             update_data["color"] = folder_update.color
+        if folder_update.parent_folder_id is not None:
+            # Validate parent folder exists and belongs to user
+            parent_response = supabase.table("note_folders")\
+                .select("depth")\
+                .eq("id", folder_update.parent_folder_id)\
+                .eq("user_id", user_id)\
+                .single()\
+                .execute()
+            
+            if not parent_response.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Parent folder not found"
+                )
+            
+            # Prevent moving folder into itself
+            if folder_id == folder_update.parent_folder_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot move folder into itself"
+                )
+            
+            # Calculate new depth
+            parent_depth = parent_response.data.get("depth", 0)
+            new_depth = parent_depth + 1
+            
+            # Enforce max depth of 2
+            if new_depth > 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot move folder: maximum nesting depth is 2 (Folder -> Subfolder -> File)"
+                )
+            
+            update_data["parent_folder_id"] = folder_update.parent_folder_id
+            update_data["depth"] = new_depth
         
         if not update_data:
             raise HTTPException(status_code=400, detail="No update data provided")
@@ -171,6 +240,15 @@ async def update_folder(
             .eq("user_id", user_id)\
             .execute()
         
+        # If parent_folder_id was updated, also update depth of all child folders
+        if "parent_folder_id" in update_data and "depth" in update_data:
+            new_depth = update_data["depth"]
+            # Update all direct children
+            supabase.table("note_folders")\
+                .update({"depth": new_depth + 1})\
+                .eq("parent_folder_id", folder_id)\
+                .execute()
+        
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to update folder")
         
@@ -181,6 +259,110 @@ async def update_folder(
         raise
     except Exception as e:
         logger.error(f"Error updating folder: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update folder")
+
+@router.patch("/folders/{folder_id}", response_model=Folder)
+async def patch_update_folder(
+    folder_id: str,
+    folder_update: FolderUpdate,
+    user_id: str = Depends(get_current_user),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Partially update a folder (PATCH method).
+    User must own the folder.
+    """
+    try:
+        logger.info(f"Patching folder {folder_id} for user: {user_id}")
+        
+        # Check folder exists and user owns it
+        check_response = supabase.table("note_folders")\
+            .select("id")\
+            .eq("id", folder_id)\
+            .eq("user_id", user_id)\
+            .single()\
+            .execute()
+        
+        if not check_response.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        
+        # Build update data
+        update_data = {}
+        if folder_update.name is not None:
+            update_data["name"] = folder_update.name
+        if folder_update.color is not None:
+            # Validate color format
+            if not folder_update.color.startswith('#') or len(folder_update.color) not in [4, 7]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid color format. Use hex format like #FF5733"
+                )
+            update_data["color"] = folder_update.color
+        if folder_update.parent_folder_id is not None:
+            # Validate parent folder exists and belongs to user
+            parent_response = supabase.table("note_folders")\
+                .select("depth")\
+                .eq("id", folder_update.parent_folder_id)\
+                .eq("user_id", user_id)\
+                .single()\
+                .execute()
+            
+            if not parent_response.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Parent folder not found"
+                )
+            
+            # Prevent moving folder into itself
+            if folder_id == folder_update.parent_folder_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot move folder into itself"
+                )
+            
+            # Calculate new depth
+            parent_depth = parent_response.data.get("depth", 0)
+            new_depth = parent_depth + 1
+            
+            # Enforce max depth of 2
+            if new_depth > 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot move folder: maximum nesting depth is 2 (Folder -> Subfolder -> File)"
+                )
+            
+            update_data["parent_folder_id"] = folder_update.parent_folder_id
+            update_data["depth"] = new_depth
+        
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No update data provided")
+        
+        # Perform update
+        response = supabase.table("note_folders")\
+            .update(update_data)\
+            .eq("id", folder_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        # If parent_folder_id was updated, also update depth of all child folders
+        if "parent_folder_id" in update_data and "depth" in update_data:
+            new_depth = update_data["depth"]
+            # Update all direct children
+            supabase.table("note_folders")\
+                .update({"depth": new_depth + 1})\
+                .eq("parent_folder_id", folder_id)\
+                .execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=500, detail="Failed to update folder")
+        
+        logger.info(f"Patched folder {folder_id}")
+        return response.data[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error patching folder: {e}")
         raise HTTPException(status_code=500, detail="Failed to update folder")
 
 @router.delete("/folders/{folder_id}", status_code=204)
