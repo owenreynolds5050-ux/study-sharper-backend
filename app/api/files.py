@@ -11,9 +11,11 @@ from pydantic import BaseModel
 router = APIRouter()
 
 class FileUpdate(BaseModel):
+    model_config = {"extra": "ignore"}
+    
     title: Optional[str] = None
     content: Optional[str] = None
-    folder_id: Optional[str] = None
+    folder_id: Optional[str] = None  # Can be null to remove from folder
     tags: Optional[List[str]] = None
     summary: Optional[str] = None
 
@@ -164,7 +166,12 @@ async def update_file(
     updates = {}
     if update_data.title is not None:
         updates["title"] = update_data.title
-    if update_data.folder_id is not None:
+    # Handle folder_id specially - check if it was explicitly provided in request
+    # This allows setting folder_id to null to remove from folder
+    # In Pydantic v2, model_fields_set tracks which fields were explicitly set
+    if hasattr(update_data, 'model_fields_set') and 'folder_id' in update_data.model_fields_set:
+        updates["folder_id"] = update_data.folder_id
+    elif update_data.folder_id is not None:
         updates["folder_id"] = update_data.folder_id
     if update_data.content is not None:
         updates["content"] = update_data.content
@@ -186,6 +193,9 @@ async def update_file(
         raise HTTPException(400, "No valid fields to update")
     
     result = supabase.table("files").update(updates).eq("id", file_id).execute()
+    
+    if not result.data:
+        raise HTTPException(500, "Failed to update file")
     
     return result.data[0]
 
