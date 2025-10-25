@@ -29,6 +29,7 @@ class FolderCreate(BaseModel):
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
+    parent_folder_id: Optional[str] = None
 
 
 class FileCreate(BaseModel):
@@ -237,11 +238,22 @@ async def create_folder(
     logging.info(f"[FILES API] Creating folder '{folder_data.name}' for user_id: {user_id}")
     # Note: note_folders table doesn't have depth/parent_folder_id columns
     # Simplified folder creation
-    result = supabase.table("note_folders").insert({
+    parent_folder_id = folder_data.parent_folder_id
+    if parent_folder_id:
+        parent_query = supabase.table("note_folders").select("id, parent_folder_id").eq("id", parent_folder_id).eq("user_id", user_id).execute()
+        if not parent_query.data:
+            raise HTTPException(400, "Parent folder not found")
+        if parent_query.data[0].get("parent_folder_id"):
+            raise HTTPException(400, "Cannot create subfolder deeper than one level")
+
+    record = {
         "user_id": user_id,
         "name": folder_data.name,
-        "color": folder_data.color
-    }).execute()
+        "color": folder_data.color,
+        "parent_folder_id": parent_folder_id if parent_folder_id else None
+    }
+
+    result = supabase.table("note_folders").insert(record).execute()
     logging.info(f"[FILES API] Folder created successfully: {result.data[0].get('id')}")
     
     return result.data[0]
@@ -258,15 +270,35 @@ async def update_folder(
     if not existing.data:
         raise HTTPException(404, "Folder not found")
     
-    updates = {}
-    if update_data.name is not None:
-        updates["name"] = update_data.name
-    if update_data.color is not None:
-        updates["color"] = update_data.color
-    
+    updates = update_data.model_dump(exclude_unset=True)
+
+    if "parent_folder_id" in updates:
+        new_parent = updates["parent_folder_id"]
+
+        if new_parent == "":
+            new_parent = None
+
+        if new_parent == folder_id:
+            raise HTTPException(400, "Folder cannot be its own parent")
+
+        if new_parent:
+            parent_query = supabase.table("note_folders").select("id, parent_folder_id").eq("id", new_parent).eq("user_id", user_id).execute()
+            if not parent_query.data:
+                raise HTTPException(400, "Parent folder not found")
+            if parent_query.data[0].get("parent_folder_id"):
+                raise HTTPException(400, "Cannot move folder into a subfolder")
+
+            child_check = supabase.table("note_folders").select("id").eq("parent_folder_id", folder_id).eq("user_id", user_id).execute()
+            if child_check.data and parent_query.data[0]["id"]:
+                raise HTTPException(400, "Cannot move parent folder into another folder while it has subfolders")
+
+            updates["parent_folder_id"] = new_parent
+        else:
+            updates["parent_folder_id"] = None
+
     if not updates:
         raise HTTPException(400, "No valid fields to update")
-    
+
     result = supabase.table("note_folders").update(updates).eq("id", folder_id).execute()
     
     return result.data[0]
