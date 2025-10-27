@@ -179,7 +179,7 @@ async def create_file(
     return result.data[0]
 
 
-@router.post("/upload", response_model=UploadResponse)
+@router.post("/files/upload", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
     folder_id: Optional[str] = None,
@@ -279,7 +279,7 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/status/{file_id}", response_model=FileStatusResponse)
+@router.get("/files/status/{file_id}", response_model=FileStatusResponse)
 async def get_file_status(
     file_id: str,
     user_id: str = Depends(get_current_user),
