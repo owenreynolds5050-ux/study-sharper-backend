@@ -5,14 +5,13 @@ Handles: PDF/DOCX/TXT extraction, chunking, and embedding generation
 
 import logging
 import hashlib
+import re
 from typing import Dict, List
 from pathlib import Path
 
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-    Docx2txtLoader,
-    TextLoader,
-)
+import pdfplumber
+from docx import Document as DocxDocument
+from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
@@ -38,7 +37,10 @@ class LangChainProcessor:
 
     def load_document(self, file_path: str, file_type: str) -> List[Document]:
         """
-        Load document based on file type.
+        Load document based on file type using best-in-class extractors.
+        - PDF: pdfplumber (preserves layout and structure)
+        - DOCX: python-docx (preserves paragraphs, lists, formatting)
+        - TXT: TextLoader (simple text)
 
         Args:
             file_path: Path to the file
@@ -55,35 +57,147 @@ class LangChainProcessor:
 
         try:
             if file_type == "pdf":
-                loader = PyPDFLoader(file_path)
+                return self._load_pdf_pdfplumber(file_path)
             elif file_type == "docx":
-                loader = Docx2txtLoader(file_path)
+                return self._load_docx_python_docx(file_path)
             elif file_type == "txt":
                 loader = TextLoader(file_path)
+                docs = loader.load()
+                logger.info(f"Loaded TXT file: {len(docs)} sections")
+                return docs
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
-
-            docs = loader.load()
-            logger.info(f"Loaded {len(docs)} pages/sections from {file_type} file")
-            return docs
 
         except Exception as e:
             logger.error(f"Error loading {file_type} document from {file_path}: {e}")
             raise
 
+    def _load_pdf_pdfplumber(self, file_path: str) -> List[Document]:
+        """
+        Load PDF using pdfplumber for better formatting preservation.
+        """
+        docs = []
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    text = page.extract_text()
+                    if text:
+                        docs.append(Document(
+                            page_content=text,
+                            metadata={"page": page_num, "source": file_path}
+                        ))
+            logger.info(f"Loaded {len(docs)} pages from PDF using pdfplumber")
+            return docs
+        except Exception as e:
+            logger.error(f"Error loading PDF with pdfplumber: {e}")
+            raise
+
+    def _load_docx_python_docx(self, file_path: str) -> List[Document]:
+        """
+        Load DOCX using python-docx to preserve structure, lists, and formatting.
+        """
+        try:
+            doc = DocxDocument(file_path)
+            text_parts = []
+            
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    text_parts.append(para.text)
+            
+            # Also extract from tables if present
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                    if row_text.strip():
+                        text_parts.append(row_text)
+            
+            full_text = "\n".join(text_parts)
+            docs = [Document(
+                page_content=full_text,
+                metadata={"source": file_path}
+            )]
+            logger.info(f"Loaded DOCX with {len(text_parts)} paragraphs/rows")
+            return docs
+        except Exception as e:
+            logger.error(f"Error loading DOCX with python-docx: {e}")
+            raise
+
     def extract_text(self, docs: List[Document]) -> str:
         """
-        Extract and combine text from all pages/sections.
+        Extract, combine, and normalize text from all pages/sections.
 
         Args:
             docs: List of LangChain Document objects
 
         Returns:
-            Combined text content
+            Combined and normalized text content
         """
         full_text = "\n".join([doc.page_content for doc in docs])
-        logger.info(f"Extracted {len(full_text)} characters from document")
-        return full_text
+        # Normalize formatting for better readability
+        normalized_text = self.normalize_text(full_text)
+        logger.info(f"Extracted and normalized {len(normalized_text)} characters from document")
+        return normalized_text
+
+    def normalize_text(self, text: str) -> str:
+        """
+        Clean up and normalize extracted text:
+        - Merge broken lines (lines ending without punctuation get joined with next line)
+        - Preserve double newlines for paragraph breaks
+        - Clean up excessive whitespace
+        - Preserve bullet points and numbered lists
+        - Remove PDF line break artifacts
+
+        Args:
+            text: Raw extracted text
+
+        Returns:
+            Normalized text with better formatting
+        """
+        # Split into lines for processing
+        lines = text.split("\n")
+        normalized_lines = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].rstrip()
+            
+            # Check if this is a blank line (paragraph break)
+            if not line.strip():
+                # Preserve paragraph breaks (but avoid excessive blank lines)
+                if normalized_lines and normalized_lines[-1] != "":
+                    normalized_lines.append("")
+                i += 1
+                continue
+            
+            # Check if line is a bullet point or numbered list
+            is_list_item = re.match(r"^\s*([•\-\*]|\d+[.)\]]|[a-z][.)\]])\s+", line)
+            
+            # If line doesn't end with punctuation and isn't a list item, try to merge with next
+            if (not re.search(r"[.!?:;,\-—]$", line) and 
+                i + 1 < len(lines) and 
+                lines[i + 1].strip() and
+                not is_list_item and
+                not re.match(r"^\s*([•\-\*]|\d+[.)\]]|[a-z][.)\]])\s+", lines[i + 1])):
+                # Merge with next line
+                merged = line + " " + lines[i + 1].strip()
+                lines[i + 1] = merged
+                i += 1
+                continue
+            
+            # Clean up excessive whitespace within line
+            line = re.sub(r"\s+", " ", line).strip()
+            
+            if line:
+                normalized_lines.append(line)
+            
+            i += 1
+        
+        # Join lines and clean up excessive blank lines
+        result = "\n".join(normalized_lines)
+        # Replace multiple blank lines with single blank line
+        result = re.sub(r"\n\n+", "\n\n", result)
+        
+        return result.strip()
 
     def chunk_text(self, text: str) -> List[Document]:
         """
