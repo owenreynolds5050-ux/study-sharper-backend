@@ -81,8 +81,7 @@ async def process_file_extraction_job(job_data: dict) -> dict:
         files_update = supabase.table("files").update({
             "extracted_text": full_text,
             "content": full_text,  # For Tiptap display
-            "processing_status": "completed",
-            "content_hash": content_hash,
+            "processing_status": "completed"
         }).eq("id", file_id).execute()
         
         if not files_update.data:
