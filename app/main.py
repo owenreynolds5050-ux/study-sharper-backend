@@ -60,9 +60,10 @@ app = FastAPI(title="StudySharper API", version="1.0.0")
 # Add OPTIONS preflight handler as the VERY FIRST middleware
 @app.middleware("http")
 async def cors_preflight_handler(request: Request, call_next):
-    """Handle OPTIONS preflight requests before they reach route handlers."""
+    """Handle OPTIONS preflight requests and add CORS headers to all responses."""
     logging.info(f"CORS Middleware: {request.method} {request.url.path}")
     
+    # Handle OPTIONS preflight
     if request.method == "OPTIONS":
         logging.info(f"OPTIONS preflight for {request.url.path} - returning 200 with CORS headers")
         return Response(
@@ -76,29 +77,27 @@ async def cors_preflight_handler(request: Request, call_next):
             }
         )
     
+    # Process the actual request
     try:
         response = await call_next(request)
     except Exception as e:
-        logging.error(f"Error processing request: {e}")
-        return Response(
+        logging.error(f"Error processing request: {e}", exc_info=True)
+        response = Response(
             status_code=500,
-            content=str(e),
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
-            }
+            content=json.dumps({"detail": str(e)}),
+            media_type="application/json",
         )
     
+    # Add CORS headers to ALL responses (including errors)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Expose-Headers"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept, Origin, User-Agent"
+    response.headers["Access-Control-Expose-Headers"] = "Content-Type, Authorization"
     
     logging.info(f"Response for {request.method} {request.url.path}: {response.status_code}")
     return response
 
-# Configure CORS middleware
+# Configure CORS middleware (backup, primary handler is the middleware above)
 logging.info("Configuring CORS with wildcard for all origins")
 app.add_middleware(
     CORSMiddleware,
