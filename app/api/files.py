@@ -207,67 +207,90 @@ async def upload_file(
             detail=f"File type {file_ext} not supported. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
+    file_id = str(uuid.uuid4())
+    
     try:
-        content = await file.read()
-
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)}MB",
-            )
-
-        file_id = str(uuid.uuid4())
-
+        # Create upload directory
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         temp_file_path = UPLOAD_DIR / f"{file_id}_{file.filename}"
 
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
+        # Stream file to disk instead of reading all into memory
+        file_size = 0
+        chunk_size = 1024 * 1024  # 1MB chunks
+        
+        try:
+            with open(temp_file_path, "wb") as f:
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    if file_size > MAX_FILE_SIZE:
+                        temp_file_path.unlink(missing_ok=True)
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)}MB",
+                        )
+                    f.write(chunk)
+        except HTTPException:
+            raise
+        except Exception as e:
+            temp_file_path.unlink(missing_ok=True)
+            raise e
 
         logger.info(
             f"File uploaded: file_id={file_id}, user_id={user_id}, "
-            f"filename={file.filename}, size={len(content)} bytes"
+            f"filename={file.filename}, size={file_size} bytes"
         )
 
         # Create file record in database
-        file_record = supabase.table("files").insert(
-            {
-                "id": file_id,
-                "user_id": user_id,
-                "folder_id": folder_id,
-                "title": Path(file.filename).stem,
-                "file_type": file_ext[1:],
-                "original_filename": file.filename,
-                "file_size_bytes": len(content),
-                "processing_status": "processing",
-                "file_path": f"users/{user_id}/uploads/{file_id}/{file.filename}",
-                "extraction_method": "langchain",
-            }
-        ).execute()
+        try:
+            file_record = supabase.table("files").insert(
+                {
+                    "id": file_id,
+                    "user_id": user_id,
+                    "folder_id": folder_id,
+                    "title": Path(file.filename).stem,
+                    "file_type": file_ext[1:],
+                    "original_filename": file.filename,
+                    "file_size_bytes": file_size,
+                    "processing_status": "processing",
+                    "file_path": f"users/{user_id}/uploads/{file_id}/{file.filename}",
+                    "extraction_method": "langchain",
+                }
+            ).execute()
 
-        if not file_record.data:
-            raise Exception("Failed to create file record in database")
+            if not file_record.data:
+                raise Exception("Failed to create file record in database")
 
-        logger.info(f"File record created in database: {file_id}")
+            logger.info(f"File record created in database: {file_id}")
+        except Exception as e:
+            temp_file_path.unlink(missing_ok=True)
+            logger.error(f"Database error for file {file_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
         # Queue background processing job
-        job_id = await job_queue.add_job(
-            job_type=JobType.TEXT_EXTRACTION,
-            job_data={
-                "file_id": file_id,
-                "user_id": user_id,
-                "file_path": str(temp_file_path),
-                "file_type": file_ext[1:],
-                "original_filename": file.filename,
-            },
-            priority=JobPriority.NORMAL,
-        )
-
-        logger.info(f"Processing job queued: job_id={job_id}, file_id={file_id}")
+        try:
+            job_id = await job_queue.add_job(
+                job_type=JobType.TEXT_EXTRACTION,
+                job_data={
+                    "file_id": file_id,
+                    "user_id": user_id,
+                    "file_path": str(temp_file_path),
+                    "file_type": file_ext[1:],
+                    "original_filename": file.filename,
+                },
+                priority=JobPriority.NORMAL,
+            )
+            logger.info(f"Processing job queued: job_id={job_id}, file_id={file_id}")
+        except Exception as e:
+            logger.error(f"Job queue error for file {file_id}: {e}", exc_info=True)
+            # Still return success - file is saved and can be processed later
+            job_id = None
 
         return UploadResponse(
             file_id=file_id,
-            job_id=job_id,
+            job_id=job_id or file_id,
             status="processing",
             message="File uploaded and queued for processing",
         )
