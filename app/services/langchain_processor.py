@@ -6,11 +6,12 @@ Handles: PDF/DOCX/TXT extraction, chunking, and embedding generation
 import logging
 import hashlib
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from pathlib import Path
+from html.parser import HTMLParser
 
-import pdfplumber
-from docx import Document as DocxDocument
+import fitz
+import mammoth
 from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -35,19 +36,19 @@ class LangChainProcessor:
         )
         logger.info("LangChainProcessor initialized with all-MiniLM-L6-v2 embeddings")
 
-    def load_document(self, file_path: str, file_type: str) -> List[Document]:
+    def load_document(self, file_path: str, file_type: str) -> Tuple[str, str]:
         """
-        Load document based on file type using best-in-class extractors.
-        - PDF: pdfplumber (preserves layout and structure)
-        - DOCX: python-docx (preserves paragraphs, lists, formatting)
-        - TXT: TextLoader (simple text)
+        Load document and extract both HTML (for display) and plain text (for embeddings).
+        - PDF: PyMuPDF (preserves formatting as HTML)
+        - DOCX: Mammoth (converts to HTML)
+        - TXT: Plain text wrapped in <pre> tags
 
         Args:
             file_path: Path to the file
             file_type: File extension (pdf, docx, txt)
 
         Returns:
-            List of LangChain Document objects
+            Tuple of (html_content, plain_text)
 
         Raises:
             ValueError: If file type is not supported
@@ -57,19 +58,47 @@ class LangChainProcessor:
 
         try:
             if file_type == "pdf":
-                return self._load_pdf_pdfplumber(file_path)
+                return self._load_pdf_pymupdf(file_path)
             elif file_type == "docx":
-                return self._load_docx_python_docx(file_path)
+                return self._load_docx_mammoth(file_path)
             elif file_type == "txt":
-                loader = TextLoader(file_path)
-                docs = loader.load()
-                logger.info(f"Loaded TXT file: {len(docs)} sections")
-                return docs
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                html = f"<pre>{text}</pre>"
+                logger.info(f"Loaded TXT file: {len(text)} characters")
+                return html, text
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
 
         except Exception as e:
             logger.error(f"Error loading {file_type} document from {file_path}: {e}")
+            raise
+
+    def _load_pdf_pymupdf(self, file_path: str) -> Tuple[str, str]:
+        """
+        Extract PDF with formatting preservation using PyMuPDF.
+        Returns: (html_content, plain_text)
+        """
+        html_parts = []
+        text_parts = []
+        
+        try:
+            with fitz.open(file_path) as pdf:
+                for page_num, page in enumerate(pdf, 1):
+                    # Extract as HTML (preserves formatting, bold, italic, etc)
+                    html = page.get_text("html")
+                    html_parts.append(html)
+                    
+                    # Extract as plain text
+                    text = page.get_text("text")
+                    text_parts.append(text)
+            
+            html_content = "\n".join(html_parts)
+            plain_text = "\n".join(text_parts)
+            logger.info(f"Loaded {len(pdf)} pages from PDF using PyMuPDF")
+            return html_content, plain_text
+        except Exception as e:
+            logger.error(f"Error loading PDF with PyMuPDF: {e}")
             raise
 
     def _load_pdf_pdfplumber(self, file_path: str) -> List[Document]:
@@ -91,6 +120,59 @@ class LangChainProcessor:
         except Exception as e:
             logger.error(f"Error loading PDF with pdfplumber: {e}")
             raise
+
+    def _load_docx_mammoth(self, file_path: str) -> Tuple[str, str]:
+        """
+        Convert DOCX to HTML with formatting preservation using Mammoth.
+        Returns: (html_content, plain_text)
+        """
+        try:
+            with open(file_path, "rb") as f:
+                result = mammoth.convert_to_html(f)
+                html_content = result.value
+            
+            # Strip HTML tags to get plain text
+            plain_text = self._strip_html(html_content)
+            
+            logger.info(f"Loaded DOCX with Mammoth: {len(html_content)} chars HTML")
+            return html_content, plain_text
+        except Exception as e:
+            logger.error(f"Error loading DOCX with Mammoth: {e}")
+            raise
+
+    def _strip_html(self, html: str) -> str:
+        """
+        Strip HTML tags from content, preserving text and basic structure.
+        """
+        class HTMLStripper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.reset()
+                self.strict = False
+                self.convert_charrefs = True
+                self.text = []
+            
+            def handle_data(self, d):
+                self.text.append(d)
+            
+            def handle_starttag(self, tag, attrs):
+                # Add newlines for block elements
+                if tag in ["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br"]:
+                    if self.text and self.text[-1] != "\n":
+                        self.text.append("\n")
+            
+            def handle_endtag(self, tag):
+                # Add newlines after block elements
+                if tag in ["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6"]:
+                    if self.text and self.text[-1] != "\n":
+                        self.text.append("\n")
+            
+            def get_data(self):
+                return "".join(self.text)
+        
+        stripper = HTMLStripper()
+        stripper.feed(html)
+        return stripper.get_data()
 
     def _load_docx_python_docx(self, file_path: str) -> List[Document]:
         """
@@ -122,21 +204,25 @@ class LangChainProcessor:
             logger.error(f"Error loading DOCX with python-docx: {e}")
             raise
 
-    def extract_text(self, docs: List[Document]) -> str:
+    def extract_text(self, html_content: str, plain_text: str) -> Tuple[str, str]:
         """
-        Extract, combine, and normalize text from all pages/sections.
+        Normalize extracted text for both display and embeddings.
 
         Args:
-            docs: List of LangChain Document objects
+            html_content: HTML content for display
+            plain_text: Plain text for embeddings
 
         Returns:
-            Combined and normalized text content
+            Tuple of (normalized_html, normalized_plain_text)
         """
-        full_text = "\n".join([doc.page_content for doc in docs])
-        # Normalize formatting for better readability
-        normalized_text = self.normalize_text(full_text)
-        logger.info(f"Extracted and normalized {len(normalized_text)} characters from document")
-        return normalized_text
+        # Normalize plain text for embeddings
+        normalized_plain = self.normalize_text(plain_text)
+        
+        logger.info(
+            f"Extracted: {len(html_content)} chars HTML, "
+            f"{len(normalized_plain)} chars plain text"
+        )
+        return html_content, normalized_plain
 
     def normalize_text(self, text: str) -> str:
         """
@@ -262,7 +348,8 @@ class LangChainProcessor:
             Dictionary with processing results:
             {
                 "status": "success" | "error",
-                "full_text": str,
+                "html_content": str (for Tiptap display),
+                "full_text": str (plain text for embeddings),
                 "chunks": List[Document],
                 "embeddings": List[List[float]],
                 "chunk_count": int,
@@ -273,28 +360,29 @@ class LangChainProcessor:
         try:
             logger.info(f"Starting file processing: file_id={file_id}, type={file_type}")
 
-            # Step 1: Load document
-            docs = self.load_document(file_path, file_type)
+            # Step 1: Load document (returns HTML + plain text)
+            html_content, plain_text = self.load_document(file_path, file_type)
 
-            # Step 2: Extract full text
-            full_text = self.extract_text(docs)
+            # Step 2: Extract and normalize text
+            html_content, full_text = self.extract_text(html_content, plain_text)
 
-            # Step 3: Split into chunks
+            # Step 3: Split plain text into chunks (NOT HTML)
             chunks = self.chunk_text(full_text)
 
-            # Step 4: Generate embeddings
+            # Step 4: Generate embeddings from plain text chunks
             embeddings = self.generate_embeddings(chunks)
 
-            # Step 5: Compute hash
+            # Step 5: Compute hash from plain text
             content_hash = self.compute_content_hash(full_text)
 
             logger.info(
                 f"File processing complete: {len(chunks)} chunks, "
-                f"{len(full_text)} characters"
+                f"{len(full_text)} chars plain text, {len(html_content)} chars HTML"
             )
 
             return {
                 "status": "success",
+                "html_content": html_content,
                 "full_text": full_text,
                 "chunks": chunks,
                 "embeddings": embeddings,

@@ -63,6 +63,7 @@ async def process_file_extraction_job(job_data: dict) -> dict:
             logger.error(f"LangChain processing failed: {error_msg}")
             raise Exception(error_msg)
         
+        html_content = result["html_content"]
         full_text = result["full_text"]
         chunks = result["chunks"]
         embeddings = result["embeddings"]
@@ -70,17 +71,18 @@ async def process_file_extraction_job(job_data: dict) -> dict:
         
         logger.info(
             f"LangChain processing complete: {len(chunks)} chunks, "
-            f"{len(full_text)} characters"
+            f"{len(full_text)} chars plain text, {len(html_content)} chars HTML"
         )
         
         # Step 2: Update files table with extracted text
         logger.debug(f"Updating files table for {file_id}")
         
-        # Convert full_text to markdown for Tiptap display
-        # (already plain text, so just store as-is)
+        # Store both versions:
+        # - extracted_text: plain text for embeddings/chunking
+        # - content: HTML for Tiptap display with formatting
         files_update = supabase.table("files").update({
             "extracted_text": full_text,
-            "content": full_text,  # For Tiptap display
+            "content": html_content,
             "processing_status": "completed"
         }).eq("id", file_id).execute()
         
@@ -144,7 +146,7 @@ async def process_file_extraction_job(job_data: dict) -> dict:
         
         logger.info(
             f"File extraction complete: file_id={file_id}, "
-            f"chunks={len(chunks)}, chars={len(full_text)}"
+            f"chunks={len(chunks)}, plain_text={len(full_text)}, html={len(html_content)}"
         )
         
         return {
