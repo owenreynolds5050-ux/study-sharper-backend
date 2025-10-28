@@ -81,9 +81,11 @@ class LangChainProcessor:
         """
         html_parts = []
         text_parts = []
+        page_count = 0
         
         try:
             with fitz.open(file_path) as pdf:
+                page_count = len(pdf)
                 for page_num, page in enumerate(pdf, 1):
                     # Extract as HTML (preserves formatting, bold, italic, etc)
                     html = page.get_text("html")
@@ -95,7 +97,7 @@ class LangChainProcessor:
             
             html_content = "\n".join(html_parts)
             plain_text = "\n".join(text_parts)
-            logger.info(f"Loaded {len(pdf)} pages from PDF using PyMuPDF")
+            logger.info(f"Loaded {page_count} pages from PDF using PyMuPDF")
             return html_content, plain_text
         except Exception as e:
             logger.error(f"Error loading PDF with PyMuPDF: {e}")
