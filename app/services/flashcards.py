@@ -176,7 +176,7 @@ Return only the JSON array of flashcards."""
     try:
         response = get_chat_completion(
             messages=messages,
-            model="anthropic/claude-3.5-sonnet",
+            model="anthropic/claude-3.5-haiku",
             temperature=0.7,
             max_tokens=2000,
             response_format={"type": "json_object"}
@@ -478,7 +478,7 @@ Only return the JSON array, no other text."""
         response = get_chat_completion([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ], model="anthropic/claude-3.5-sonnet")
+        ], model="anthropic/claude-3.5-haiku")
         
         # Parse response
         groups_data = json.loads(response.strip())

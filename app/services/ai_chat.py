@@ -289,7 +289,7 @@ Respond ONLY with valid JSON in this exact format:
         response = get_chat_completion([
             {"role": "system", "content": "You are a precise intent analyzer. Always respond with valid JSON only."},
             {"role": "user", "content": analysis_prompt}
-        ], model="anthropic/claude-3.5-sonnet")
+        ], model="anthropic/claude-3.5-haiku")
         
         # Parse JSON response
         analysis = json.loads(response.strip())

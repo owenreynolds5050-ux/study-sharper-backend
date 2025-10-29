@@ -106,7 +106,7 @@ async def chat_with_files(
         ]
 
         # Step 5: Call OpenRouter
-        response_text = get_chat_completion(messages, model="anthropic/claude-3.5-sonnet")
+        response_text = get_chat_completion(messages, model="anthropic/claude-3.5-haiku")
 
         # Step 6: Save assistant response to database
         assistant_msg_data = {

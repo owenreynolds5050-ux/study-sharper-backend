@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
+DEFAULT_MODEL = "anthropic/claude-3.5-haiku"
 
 
 def get_chat_completion(
