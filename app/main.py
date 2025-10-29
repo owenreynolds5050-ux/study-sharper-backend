@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from app.api import chat, embeddings, folders, flashcards, ai_chat
+from app.api import chat, embeddings, folders, flashcards, ai_chat, file_chat
 from app.api.files import router as files_router
 from app.core.config import ALLOWED_ORIGINS_LIST
 from app.core.startup import run_startup_checks
@@ -31,7 +31,6 @@ from app.core.auth import get_current_user_from_token
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from app.api import file_chat
 import uuid
 import asyncio
 import json
