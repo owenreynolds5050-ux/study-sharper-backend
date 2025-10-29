@@ -97,17 +97,17 @@ async def cors_preflight_handler(request: Request, call_next):
     return response
 
 # Configure CORS middleware (backup, primary handler is the middleware above)
-logging.info("Configuring CORS with wildcard for all origins")
+logging.info(f"Configuring CORS with origins: {ALLOWED_ORIGINS_LIST}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_origins=ALLOWED_ORIGINS_LIST + ["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=3600,
 )
-logging.info("CORS middleware configured with wildcard")
+logging.info(f"CORS middleware configured with origins: {ALLOWED_ORIGINS_LIST}")
 
 # Background task for SSE cleanup
 async def start_sse_cleanup():
