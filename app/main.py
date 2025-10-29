@@ -65,14 +65,15 @@ async def cors_preflight_handler(request: Request, call_next):
     # Handle OPTIONS preflight
     if request.method == "OPTIONS":
         logging.info(f"OPTIONS preflight for {request.url.path} - returning 200 with CORS headers")
+        origin = request.headers.get("origin", "*")
         return Response(
             status_code=200,
             headers={
-                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Origin": origin,
                 "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, User-Agent",
                 "Access-Control-Max-Age": "3600",
-                "Access-Control-Allow-Credentials": "false",
+                "Access-Control-Allow-Credentials": "true",
             }
         )
     
@@ -88,9 +89,11 @@ async def cors_preflight_handler(request: Request, call_next):
         )
     
     # Add CORS headers to ALL responses (including errors)
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    origin = request.headers.get("origin", "*")
+    response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept, Origin, User-Agent"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Expose-Headers"] = "Content-Type, Authorization"
     
     logging.info(f"Response for {request.method} {request.url.path}: {response.status_code}")
