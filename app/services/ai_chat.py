@@ -177,6 +177,9 @@ async def retrieve_relevant_file_chunks(
     try:
         embedding_result = get_embedding_for_text(query)
         query_embedding = embedding_result["embedding"]
+        if len(query_embedding) != 384:
+            raise ValueError(f"Embedding dimension mismatch: expected 384, got {len(query_embedding)}")
+
 
         params = {
             "query_embedding": query_embedding,
