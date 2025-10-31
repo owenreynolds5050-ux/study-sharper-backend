@@ -139,7 +139,7 @@ async def retrieve_relevant_notes(
             "query_embedding": query_embedding,
             "match_threshold": 0.5,
             "match_count": top_k,
-            "p_user_id": user_id
+            "user_id_param": user_id
         }).execute()
         
         notes = response.data or []
@@ -175,33 +175,74 @@ async def retrieve_relevant_file_chunks(
 ) -> Dict[str, Any]:
     """Find the most relevant file chunks for a user query."""
     try:
+        logger.info(f"=== RAG DEBUG ===")
+        logger.info(f"Query: {query[:100]}..." if len(query) > 100 else f"Query: {query}")
+        logger.info(f"User ID: {user_id}")
+        logger.info(f"File IDs: {file_ids}")
+        logger.info(f"Top K: {top_k}")
+        
         embedding_result = get_embedding_for_text(query)
         query_embedding = embedding_result["embedding"]
+        logger.info(f"Query embedding length: {len(query_embedding)}")
+        
         if len(query_embedding) != 384:
             raise ValueError(f"Embedding dimension mismatch: expected 384, got {len(query_embedding)}")
 
+        # Always query across user's files and optionally filter in-memory
+        search_limit = top_k
+        if file_ids:
+            search_limit = top_k * max(len(file_ids), 1) * 2
+            logger.info(f"Searching specific file IDs, adjusted limit: {search_limit}")
+        else:
+            logger.info("Searching across all user files")
 
         params = {
-            "query_embedding": query_embedding,
-            "match_count": top_k,
-            "p_user_id": user_id
+            "p_query_embedding": query_embedding,
+            "p_user_id": user_id,
+            "p_limit": search_limit
         }
+        logger.info(
+            f"Params: p_query_embedding (384-dim), p_user_id={user_id}, p_limit={search_limit}"
+        )
 
-        if file_ids:
-            params["p_file_ids"] = file_ids
-
-        response = supabase.rpc("search_file_chunks", params).execute()
-
+        response = supabase.rpc("search_all_user_chunks", params).execute()
+        logger.info(f"RPC response status: {response.status_code if hasattr(response, 'status_code') else 'N/A'}")
+        logger.info(f"RPC response data type: {type(response.data)}")
+        
         chunks = response.data or []
+        if file_ids:
+            allowed_ids = set(file_ids)
+            chunks = [chunk for chunk in chunks if chunk.get("file_id") in allowed_ids]
+            logger.info(f"Chunks after filtering by file_ids: {len(chunks)}")
+        logger.info(f"Chunks returned from RPC: {len(chunks)}")
+        if chunks:
+            logger.info(f"First chunk keys: {list(chunks[0].keys())}")
+            logger.info(f"First chunk: {chunks[0]}")
 
+        # Get unique file IDs to look up titles
+        file_ids_in_chunks = set(chunk.get("file_id") for chunk in chunks if chunk.get("file_id"))
+        logger.info(f"Unique file IDs in chunks: {file_ids_in_chunks}")
+        
+        # Look up file titles
+        file_titles = {}
+        if file_ids_in_chunks:
+            try:
+                files_result = supabase.table("files").select("id, title").in_("id", list(file_ids_in_chunks)).execute()
+                file_titles = {f["id"]: f["title"] for f in (files_result.data or [])}
+                logger.info(f"File titles looked up: {file_titles}")
+            except Exception as e:
+                logger.error(f"Error looking up file titles: {e}")
+        
         formatted = []
         for index, chunk in enumerate(chunks[:top_k]):
-            chunk_text = chunk.get("text", "").strip()
-            file_title = chunk.get("file_title") or chunk.get("title") or "Untitled"
-            similarity = chunk.get("similarity") or chunk.get("score")
+            chunk_text = chunk.get("content", "").strip()  # Changed from "text" to "content"
+            file_id = chunk.get("file_id")
+            file_title = file_titles.get(file_id, "Untitled")
+            similarity = chunk.get("similarity")
+            logger.info(f"Processing chunk {index}: file_id={file_id}, title={file_title}, similarity={similarity}")
             formatted.append({
                 "rank": index + 1,
-                "file_id": chunk.get("file_id"),
+                "file_id": file_id,
                 "chunk_id": chunk.get("chunk_id"),
                 "file_title": file_title,
                 "text": chunk_text,

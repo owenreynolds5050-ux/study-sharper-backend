@@ -35,6 +35,12 @@ async def chat_with_files(
     supabase = Depends(get_supabase_client)
 ):
     """Chat with uploaded files using RAG. Creates/resumes conversation sessions."""
+    logger.info(f"=== CHAT REQUEST RECEIVED ===")
+    logger.info(f"  Message: {request.message[:100]}..." if len(request.message) > 100 else f"  Message: {request.message}")
+    logger.info(f"  File IDs: {request.file_ids}")
+    logger.info(f"  Session ID: {request.session_id}")
+    logger.info(f"  User ID: {user_id}")
+    
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
