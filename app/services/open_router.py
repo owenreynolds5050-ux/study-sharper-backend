@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "anthropic/claude-3.5-haiku"
+DEFAULT_MODEL = "groq/mixtral-8x7b-32768"
+GROQ_FLASHCARD_MODEL = "groq/mixtral-8x7b-32768"  # Fast & cheap for generation
+GROQ_VERIFICATION_MODEL = "groq/llama-2-70b-chat"  # Better for verification
 
 
 def get_chat_completion(

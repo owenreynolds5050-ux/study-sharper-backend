@@ -8,8 +8,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
 from app.core.auth import get_current_user, get_supabase_client
+from app.core.database import supabase
 from app.services.flashcards import (
     generate_flashcards_from_text,
+    generate_flashcards_from_file,
     calculate_next_review_interval,
     update_mastery_level
 )
@@ -38,6 +40,12 @@ class GenerateFlashcardsRequest(BaseModel):
     difficulty: str = "medium"  # easy, medium, hard
     set_title: Optional[str] = None
     set_description: Optional[str] = None
+
+
+class GenerateFromFileRequest(BaseModel):
+    file_id: str
+    num_cards: int = 10
+    difficulty: str = "medium"  # easy, medium, hard
 
 
 class FlashcardResponse(BaseModel):
@@ -627,4 +635,37 @@ async def get_due_flashcards(
             "count": len(response.data) if response.data else 0
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/generate-from-file")
+async def generate_from_file(
+    request: GenerateFromFileRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """Generate flashcards from a specific uploaded file."""
+    try:
+        # Validate file exists and user owns it
+        file = supabase.table("files").select("*").eq(
+            "id", request.file_id
+        ).eq("user_id", current_user).single().execute()
+        
+        if not file.data:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Generate flashcards
+        result = await generate_flashcards_from_file(
+            file_id=request.file_id,
+            user_id=current_user,
+            num_cards=request.num_cards,
+            difficulty=request.difficulty,
+            supabase=supabase
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import logging
 import json
 import re
+from app.services.flashcard_verification import verifier
+from datetime import datetime
 
 
 logger = logging.getLogger(__name__)
@@ -677,3 +679,218 @@ Otherwise, respond with:
                 "Make flashcards about the topics I studied this week"
             ]
         }
+async def generate_flashcards_from_file(
+    file_id: str,
+    user_id: str,
+    num_cards: int = 10,
+    difficulty: str = "medium",
+    supabase = None
+) -> Dict:
+    """
+    METHOD 2: Generate flashcards from a specific uploaded file.
+    """
+    try:
+        # Fetch file with extracted text
+        file = supabase.table("files").select("*").eq("id", file_id).eq(
+            "user_id", user_id
+        ).single().execute()
+        
+        if not file.data or not file.data.get("extracted_text"):
+            raise ValueError("File not found or has no extracted text")
+        
+        # Get source text (limit to 8000 chars for API)
+        source_text = file.data["extracted_text"][:8000]
+        
+        # Generate flashcards
+        flashcards = generate_flashcards_from_text(
+            text=source_text,
+            note_title=file.data.get("title", ""),
+            num_cards=num_cards,
+            difficulty=difficulty
+        )
+        
+        # Create flashcard set
+        set_data = {
+            "user_id": user_id,
+            "title": f"{file.data['title']} - Flashcards",
+            "description": f"Auto-generated from {file.data['original_filename']}",
+            "source_file_ids": [file_id],
+            "ai_generated": True,
+            "generation_status": "verifying",
+            "total_cards": len(flashcards)
+        }
+        
+        set_result = supabase.table("flashcard_sets").insert(set_data).execute()
+        set_id = set_result.data[0]["id"]
+        
+        # Verify flashcards
+        verification_results = await verifier.verify_batch(
+            flashcards=flashcards,
+            source_text=source_text,
+            difficulty=difficulty
+        )
+        
+        # Store flashcards with verification
+        stored_cards = []
+        passed_count = 0
+        failed_count = 0
+        
+        for idx, (card, verification) in enumerate(zip(flashcards, verification_results)):
+            # Insert flashcard
+            card_result = supabase.table("flashcards").insert({
+                "user_id": user_id,
+                "set_id": set_id,
+                "front": card["front"],
+                "back": card["back"],
+                "explanation": card.get("explanation", ""),
+                "position": idx,
+                "ai_generated": True,
+                "source_note_id": file_id,
+                "mastery_level": 0,
+                "times_reviewed": 0,
+                "times_correct": 0,
+                "times_incorrect": 0
+            }).execute()
+            
+            card_id = card_result.data[0]["id"]
+            
+            # Store verification result
+            supabase.table("flashcard_verifications").insert({
+                "user_id": user_id,
+                "flashcard_id": card_id,
+                "set_id": set_id,
+                "accuracy_score": verification["accuracy_score"],
+                "truth_score": verification["truth_score"],
+                "relevance_score": verification["relevance_score"],
+                "appropriateness_score": verification["appropriateness_score"],
+                "overall_score": verification["overall_score"],
+                "verification_status": "passed" if verification["passed"] else "failed",
+                "issues": verification["issues"],
+                "verified_at": datetime.utcnow().isoformat()
+            }).execute()
+            
+            stored_cards.append(card_id)
+            
+            if verification["passed"]:
+                passed_count += 1
+            else:
+                failed_count += 1
+        
+        # Update set status
+        supabase.table("flashcard_sets").update({
+            "generation_status": "complete",
+            "total_cards": len(flashcards),
+            "mastered_cards": 0
+        }).eq("id", set_id).execute()
+        
+        return {
+            "success": True,
+            "set_id": set_id,
+            "flashcards": stored_cards,
+            "total_cards": len(flashcards),
+            "passed_verification": passed_count,
+            "failed_verification": failed_count,
+            "message": f"Generated {len(flashcards)} flashcards ({passed_count} passed verification)"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating flashcards from file: {e}")
+        raise
+
+
+async def generate_flashcards_from_chat_context(
+    user_id: str,
+    message: str,
+    chat_context: str,
+    num_cards: int = 10,
+    difficulty: str = "medium",
+    supabase = None
+) -> Dict:
+    """
+    METHOD 3: Generate flashcards from chat request + context.
+    Generates without a specific source file.
+    """
+    try:
+        # Generate flashcards from chat context
+        flashcards = generate_flashcards_from_text(
+            text=chat_context[:4000],
+            note_title=message,
+            num_cards=num_cards,
+            difficulty=difficulty
+        )
+        
+        # Create set
+        set_data = {
+            "user_id": user_id,
+            "title": f"Flashcards: {message[:50]}",
+            "description": f"Generated from chat request",
+            "source_file_ids": [],
+            "ai_generated": True,
+            "generation_status": "verifying",
+            "total_cards": len(flashcards)
+        }
+        
+        set_result = supabase.table("flashcard_sets").insert(set_data).execute()
+        set_id = set_result.data[0]["id"]
+        
+        # Verify
+        verification_results = await verifier.verify_batch(
+            flashcards=flashcards,
+            source_text=chat_context[:4000],
+            difficulty=difficulty
+        )
+        
+        # Store with verification
+        stored_cards = []
+        passed_count = 0
+        
+        for idx, (card, verification) in enumerate(zip(flashcards, verification_results)):
+            card_result = supabase.table("flashcards").insert({
+                "user_id": user_id,
+                "set_id": set_id,
+                "front": card["front"],
+                "back": card["back"],
+                "explanation": card.get("explanation", ""),
+                "position": idx,
+                "ai_generated": True,
+                "source_note_id": None,
+                "mastery_level": 0,
+                "times_reviewed": 0,
+                "times_correct": 0,
+                "times_incorrect": 0
+            }).execute()
+            
+            card_id = card_result.data[0]["id"]
+            
+            supabase.table("flashcard_verifications").insert({
+                "user_id": user_id,
+                "flashcard_id": card_id,
+                "set_id": set_id,
+                "accuracy_score": verification["accuracy_score"],
+                "truth_score": verification["truth_score"],
+                "relevance_score": verification["relevance_score"],
+                "appropriateness_score": verification["appropriateness_score"],
+                "overall_score": verification["overall_score"],
+                "verification_status": "passed" if verification["passed"] else "failed",
+                "issues": verification["issues"],
+                "verified_at": datetime.utcnow().isoformat()
+            }).execute()
+            
+            stored_cards.append(card_id)
+            if verification["passed"]:
+                passed_count += 1
+        
+        supabase.table("flashcard_sets").update({
+            "generation_status": "complete"
+        }).eq("id", set_id).execute()
+        
+        return {
+            "success": True,
+            "set_id": set_id,
+            "flashcards": stored_cards,
+            "message": f"Generated {len(flashcards)} flashcards from your request"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating flashcards from chat: {e}")
+        raise
