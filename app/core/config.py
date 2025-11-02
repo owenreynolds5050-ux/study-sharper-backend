@@ -13,7 +13,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # CORS configuration
 # In production, set ALLOWED_ORIGINS to your Vercel domain(s)
 # Example: "https://your-app.vercel.app,https://your-app-production.vercel.app"
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://study-sharper-frontend-2.vercel.app")
 ALLOWED_ORIGINS_LIST = [origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()]
 
 # Log CORS configuration on startup
