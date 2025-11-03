@@ -51,8 +51,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Run startup checks
-run_startup_checks()
+# Run startup checks unless explicitly skipped (helps speed up build/deploy cycles)
+SKIP_STARTUP_CHECKS = os.getenv("SKIP_STARTUP_CHECKS", "false").lower() == "true"
+if SKIP_STARTUP_CHECKS:
+    logging.info("Skipping startup checks because SKIP_STARTUP_CHECKS=true")
+else:
+    run_startup_checks()
 
 app = FastAPI(title="StudySharper API", version="1.0.0")
 
@@ -131,9 +135,12 @@ async def startup_event():
     logger.info("🚀 Application startup")
     
     # Start job queue workers (NOT async)
-    logger.info("Starting job queue workers...")
-    job_queue.start_workers()
-    logger.info("✅ Job queue workers started")
+    if os.getenv("DISABLE_JOB_WORKERS", "false").lower() == "true":
+        logger.info("Skipping job queue worker startup because DISABLE_JOB_WORKERS=true")
+    else:
+        logger.info("Starting job queue workers...")
+        job_queue.start_workers()
+        logger.info("✅ Job queue workers started")
     
     # Start SSE cleanup
     asyncio.create_task(start_sse_cleanup())
@@ -147,9 +154,12 @@ async def shutdown_event():
     logger.info("🛑 Application shutdown")
     
     # Stop job queue workers
-    logger.info("Stopping job queue workers...")
-    await job_queue.stop_workers()
-    logger.info("✅ Job queue workers stopped")
+    if os.getenv("DISABLE_JOB_WORKERS", "false").lower() == "true":
+        logger.info("Skipping job queue worker shutdown because DISABLE_JOB_WORKERS=true")
+    else:
+        logger.info("Stopping job queue workers...")
+        await job_queue.stop_workers()
+        logger.info("✅ Job queue workers stopped")
     
     print("✓ Application shutdown complete")
 
