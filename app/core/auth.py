@@ -31,15 +31,19 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="Missing token")
     
+    # Log incoming token (first 20 chars only for security)
+    token_preview = token[:20] + "..." if len(token) > 20 else token
+    logger.info(f"[AUTH] Incoming token: {token_preview}")
+    
     try:
         # First, decode JWT to extract user_id without verification (for logging)
         try:
             unverified_payload = jwt.decode(token, options={"verify_signature": False})
             user_id = unverified_payload.get("sub")
             exp = unverified_payload.get("exp")
-            logger.info(f"Token received for user: {user_id}, expires: {exp}")
+            logger.info(f"[AUTH] Token received for user: {user_id}, expires: {exp}")
         except Exception as e:
-            logger.warning(f"Could not decode token for logging: {e}")
+            logger.warning(f"[AUTH] Could not decode token for logging: {e}")
         
         # Validate token using Supabase client
         supabase = get_supabase_client()
@@ -50,11 +54,12 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
             if not user_response.user or not user_response.user.id:
                 raise HTTPException(status_code=401, detail="Invalid token: user not found")
             
-            logger.info(f"Token validated successfully for user: {user_response.user.id}")
-            return user_response.user.id
+            returned_user_id = user_response.user.id
+            logger.info(f"[AUTH] PATH 1 (Supabase): Returning user_id = {returned_user_id}")
+            return returned_user_id
             
         except Exception as supabase_error:
-            logger.error(f"Supabase token validation failed: {supabase_error}")
+            logger.error(f"[AUTH] Supabase token validation failed: {supabase_error}")
             
             # Fallback: decode JWT manually if Supabase validation fails
             # This is less secure but allows operation during service issues
@@ -65,7 +70,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
                 if not user_id:
                     raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
                 
-                logger.warning(f"Using fallback token validation for user: {user_id}")
+                logger.warning(f"[AUTH] PATH 2 (JWT Fallback): Returning user_id = {user_id}")
                 return user_id
                 
             except jwt.DecodeError as decode_error:
@@ -75,7 +80,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
         # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error(f"Authentication failed with unexpected error: {e}")
+        logger.error(f"[AUTH] Authentication failed with unexpected error: {e}")
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 

@@ -68,6 +68,7 @@ class FlashcardResponse(BaseModel):
 
 class FlashcardSetResponse(BaseModel):
     id: str
+    user_id: str
     title: str
     description: Optional[str] = None
     source_note_ids: List[str]
