@@ -344,9 +344,9 @@ async def accept_or_reject_suggestion(
 
 @router.get("/flashcards/sets", response_model=List[FlashcardSetResponse])
 async def get_flashcard_sets(
+    response: Response,
     user_id: str = Depends(get_current_user),
-    supabase = Depends(get_supabase_client),
-    response: Response
+    supabase = Depends(get_supabase_client)
 ):
     """Get all flashcard sets for the current user."""
     try:
