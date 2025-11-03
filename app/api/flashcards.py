@@ -3,7 +3,7 @@ Flashcard API Endpoints
 Handles flashcard generation, CRUD operations, and spaced repetition reviews
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -345,15 +345,22 @@ async def accept_or_reject_suggestion(
 @router.get("/flashcards/sets", response_model=List[FlashcardSetResponse])
 async def get_flashcard_sets(
     user_id: str = Depends(get_current_user),
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    response: Response = None
 ):
     """Get all flashcard sets for the current user."""
     try:
-        response = supabase.table("flashcard_sets").select("*").eq(
+        # Set cache control headers to prevent browser/server caching
+        if response:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        
+        data = supabase.table("flashcard_sets").select("*").eq(
             "user_id", user_id
         ).order("created_at", desc=True).execute()
         
-        return response.data
+        return data.data
     except Exception as e:
         logger.error(f"Failed to get flashcard sets: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get flashcard sets: {str(e)}")
