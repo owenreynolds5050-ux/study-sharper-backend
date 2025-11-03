@@ -650,7 +650,7 @@ async def get_due_flashcards(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/generate-from-file")
+@router.post("/flashcards/generate-from-file")
 async def generate_from_file(
     request: GenerateFromFileRequest,
     current_user: str = Depends(get_current_user)
