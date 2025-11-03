@@ -346,15 +346,14 @@ async def accept_or_reject_suggestion(
 async def get_flashcard_sets(
     user_id: str = Depends(get_current_user),
     supabase = Depends(get_supabase_client),
-    response: Response = None
+    response: Response
 ):
     """Get all flashcard sets for the current user."""
     try:
         # Set cache control headers to prevent browser/server caching
-        if response:
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         
         data = supabase.table("flashcard_sets").select("*").eq(
             "user_id", user_id
