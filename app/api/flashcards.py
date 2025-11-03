@@ -428,8 +428,13 @@ async def delete_flashcard_set(
         response = supabase.table("flashcard_sets").delete().eq(
             "id", set_id
         ).eq("user_id", user_id).execute()
+
+        deleted_rows = response.data or []
+        if not deleted_rows:
+            logger.warning(f"Delete requested for set {set_id} but no rows removed")
+            raise HTTPException(status_code=404, detail="Flashcard set not found")
         
-        return {"success": True}
+        return {"success": True, "deleted": len(deleted_rows)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
