@@ -4,7 +4,8 @@ Checks: Accuracy, Truth, Relevance, Appropriateness
 """
 
 from typing import List, Dict
-from app.services.open_router import get_chat_completion
+from app.services.open_router import get_chat_completion, VERIFICATION_MODEL
+
 import json
 import logging
 from datetime import datetime
@@ -15,7 +16,8 @@ class FlashcardVerifier:
     """Verifies flashcard quality using LLM evaluation."""
     
     def __init__(self):
-        self.model = "groq/llama-2-70b-chat"
+        self.model = VERIFICATION_MODEL
+
         self.thresholds = {
             "accuracy": 0.7,
             "truth": 0.8,
@@ -80,7 +82,7 @@ Be strict but fair. A score of 0.7+ is good. Only respond with valid JSON, no ot
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model,
                 temperature=0.3,
-                max_tokens=300
+                max_tokens=500  # Increased to allow more detailed Grok responses
             )
             
             # Parse JSON response

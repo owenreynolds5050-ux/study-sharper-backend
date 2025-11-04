@@ -5,7 +5,8 @@ Generates AI-powered flashcards from note content using OpenRouter
 
 from typing import List, Dict, Any, Optional
 from uuid import UUID
-from app.services.open_router import get_chat_completion
+from app.services.open_router import get_chat_completion, GENERATION_MODEL
+
 from app.services.embeddings import get_embedding_for_text
 from datetime import datetime, timedelta
 import logging
@@ -178,7 +179,7 @@ Return only the JSON array of flashcards."""
     try:
         response = get_chat_completion(
             messages=messages,
-            model="anthropic/claude-3.5-haiku",
+            model=GENERATION_MODEL,
             temperature=0.7,
             max_tokens=2000,
             response_format={"type": "json_object"}

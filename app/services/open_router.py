@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "groq/mixtral-8x7b-32768"
-GROQ_FLASHCARD_MODEL = "groq/mixtral-8x7b-32768"  # Fast & cheap for generation
-GROQ_VERIFICATION_MODEL = "groq/llama-2-70b-chat"  # Better for verification
+
+# Model configuration - optimized for cost and quality
+DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct"  # Cheap default
+GENERATION_MODEL = "meta-llama/llama-3.1-8b-instruct"  # Fast & cheap for flashcard generation (~$0.05/1M tokens)
+VERIFICATION_MODEL = "x-ai/grok-beta"  # Grok for fact-checking and verification
+CHAT_MODEL = "anthropic/claude-3.5-haiku"  # Keep for complex chat interactions
 
 
 def get_chat_completion(
