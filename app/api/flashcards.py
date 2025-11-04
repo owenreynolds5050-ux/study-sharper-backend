@@ -650,7 +650,7 @@ async def get_due_flashcards(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/flashcards/generate-from-file")
+@router.post("/generate-from-file")
 async def generate_from_file(
     request: GenerateFromFileRequest,
     current_user: str = Depends(get_current_user)
@@ -681,3 +681,9 @@ async def generate_from_file(
     except Exception as e:
         logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/flashcards/test-endpoint")
+async def test_endpoint():
+    """Simple endpoint to verify router loading."""
+    return {"status": "ok"}
