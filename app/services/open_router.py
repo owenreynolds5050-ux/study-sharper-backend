@@ -15,7 +15,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Model configuration - optimized for cost and quality
 DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct"  # Cheap default
 GENERATION_MODEL = "meta-llama/llama-3.1-8b-instruct"  # Fast & cheap for flashcard generation (~$0.05/1M tokens)
-VERIFICATION_MODEL = "x-ai/grok-beta"  # Grok for fact-checking and verification
+VERIFICATION_MODEL = "x-ai/grok-4-fast"  # Grok for fact-checking and verification
 CHAT_MODEL = "anthropic/claude-3.5-haiku"  # Keep for complex chat interactions
 
 

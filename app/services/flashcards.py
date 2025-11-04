@@ -746,7 +746,7 @@ async def generate_flashcards_from_file(
                 "explanation": card.get("explanation", ""),
                 "position": idx,
                 "ai_generated": True,
-                "source_note_id": file_id,
+                "source_file_id": file_id,
                 "mastery_level": 0,
                 "times_reviewed": 0,
                 "times_correct": 0,
